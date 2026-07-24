@@ -4,14 +4,14 @@ const { ThermalPrinter, PrinterTypes, CharacterSet, BreakLine } = require('node-
 const fs = require('fs');
 
 // ============================================================
-// CONFIGURACIÓN DE IMPRESIÓN
+// CONFIGURACIÓN DE IMPRESIÓN (sin driver explícito)
 // ============================================================
 const PRINTER_CONFIG = {
-  type: PrinterTypes.STAR,
-  interface: 'printer:POS-80', // Ajusta al nombre de tu impresora
+  type: PrinterTypes.STAR,              // O EPSON, según tu impresora
+  interface: 'printer:POS-80',          // Nombre de tu impresora en Windows
   characterSet: CharacterSet.PC852_LATIN2,
   breakLine: BreakLine.WORD,
-  driver: require('node-thermal-printer/drivers/windows')
+  // driver: require('node-thermal-printer/drivers/windows') // <-- ELIMINADO
 };
 
 // ============================================================
@@ -66,14 +66,12 @@ function createWindow() {
     icon: path.join(__dirname, '../public/posven-logo.png'),
   });
 
-  // Determinar entorno
   const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
   if (isDev) {
     win.loadURL('http://localhost:9002');
     win.webContents.openDevTools();
   } else {
-    // Producción: cargar el archivo estático generado por Next.js
     const indexPath = path.join(__dirname, '../out/index.html');
     win.loadFile(indexPath);
   }
@@ -82,9 +80,7 @@ function createWindow() {
     win.show();
   });
 
-  win.on('closed', () => {
-    // Permitir que la aplicación termine
-  });
+  win.on('closed', () => {});
 
   return win;
 }
@@ -93,7 +89,6 @@ function createWindow() {
 // CICLO DE VIDA DE LA APLICACIÓN
 // ============================================================
 app.whenReady().then(() => {
-  // Registrar manejadores IPC
   ipcMain.handle('print-ticket', handlePrintTicket);
   ipcMain.handle('get-app-version', handleGetAppVersion);
 
