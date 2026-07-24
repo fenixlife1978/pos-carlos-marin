@@ -218,6 +218,7 @@ export interface Return {
   totalUSD: number;
   metodoReembolso: string;
   motivo: string;
+  terminalId?: string; // <--- AGREGADO
 }
 
 export interface Anulacion {
@@ -227,6 +228,7 @@ export interface Anulacion {
   totalUSD: number;
   motivo: string;
   items: any[];
+  terminalId?: string; // <--- AGREGADO
 }
 
 export interface ReportZ {

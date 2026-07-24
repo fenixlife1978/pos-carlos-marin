@@ -16,7 +16,8 @@ import {
   ShieldX,
   ArrowLeft,
   Eye,
-  ShieldAlert
+  ShieldAlert,
+  Loader2
 } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 
@@ -27,6 +28,7 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
   const [returnItems, setReturnItems] = useState<ReturnItem[]>([]);
   const [refundMethod, setRefundMethod] = useState<'EFECTIVO' | 'MISMO_METODO' | 'CREDITO_TIENDA'>('EFECTIVO');
   const [reason, setMotivo] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const buscarVenta = () => {
     const sale = state.ventas.find(v => (v.id === saleSearch || v.id.endsWith(saleSearch)) && (!terminalId || v.terminalId === terminalId));
@@ -68,159 +70,193 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
     }]);
   };
 
-  const procesarDevolucion = () => {
-    if (!selectedSale || returnItems.length === 0) return;
+  const procesarDevolucion = async () => {
+    if (!selectedSale || returnItems.length === 0 || isProcessing) return;
     if (!reason.trim()) return alert('Por favor indique el motivo de la devolución');
 
-    const totalDevuelto = returnItems.reduce((s, i) => s + (i.cantidad * i.precioUnitUSD), 0);
-    const idDev = 'DEV-' + String(state.proximaDevolucion || 1).padStart(6, '0');
-    const ahoraStr = Utils.ahora();
+    setIsProcessing(true);
+    try {
+      const totalDevuelto = returnItems.reduce((s, i) => s + (i.cantidad * i.precioUnitUSD), 0);
+      const idDev = 'DEV-' + String(state.proximaDevolucion || 1).padStart(6, '0');
+      const ahoraStr = Utils.ahora();
 
-    const nuevaDevolucion: Return = {
-      id: idDev,
-      ventaId: selectedSale.id,
-      fecha: ahoraStr,
-      items: [...returnItems],
-      totalUSD: totalDevuelto,
-      metodoReembolso: refundMethod,
-      motivo: reason
-    };
+      const nuevaDevolucion: Return = {
+        id: idDev,
+        ventaId: selectedSale.id,
+        fecha: ahoraStr,
+        items: [...returnItems],
+        totalUSD: totalDevuelto,
+        metodoReembolso: refundMethod,
+        motivo: reason,
+        terminalId: terminalId || 'GLOBAL'
+      };
 
-    const nuevosProductos = [...state.productos];
-    const nuevosMovimientos: Movimiento[] = [];
+      const nuevosProductos = [...state.productos];
+      const nuevosMovimientos: Movimiento[] = [];
 
-    returnItems.forEach(item => {
-      const pIdx = nuevosProductos.findIndex(p => p.id === item.productoId);
-      if (pIdx >= 0) {
-        const p = nuevosProductos[pIdx];
-        const stockAntes = p.stock;
-        
-        if (item.estadoProducto === 'REINTEGRADO_STOCK') {
-          nuevosProductos[pIdx] = { ...p, stock: p.stock + item.cantidad };
+      returnItems.forEach(item => {
+        const pIdx = nuevosProductos.findIndex(p => p.id === item.productoId);
+        if (pIdx >= 0) {
+          const p = nuevosProductos[pIdx];
+          const stockAntes = p.stock;
+          
+          if (item.estadoProducto === 'REINTEGRADO_STOCK') {
+            nuevosProductos[pIdx] = { ...p, stock: p.stock + item.cantidad };
+          }
+
+          nuevosMovimientos.push({
+            id: Store.uid(),
+            productoId: item.productoId,
+            tipo: 'devolucion',
+            cantidad: item.cantidad,
+            stockAntes,
+            stockDespues: nuevosProductos[pIdx].stock,
+            fecha: ahoraStr,
+            referencia: `DEVOLUCIÓN ${idDev} - REF VENTA ${selectedSale.id}`,
+            terminalId: terminalId || 'GLOBAL'
+          });
         }
+      });
 
-        nuevosMovimientos.push({
-          id: Store.uid(),
-          productoId: item.productoId,
-          tipo: 'devolucion',
-          cantidad: item.cantidad,
-          stockAntes,
-          stockDespues: nuevosProductos[pIdx].stock,
-          fecha: ahoraStr,
-          referencia: `DEVOLUCIÓN ${idDev} - REF VENTA ${selectedSale.id}`,
-          terminalId: terminalId || 'GLOBAL'
-        });
-      }
-    });
+      const nuevasVentas = state.ventas.map(v => {
+        if (v.id === selectedSale.id) {
+          return { ...v, estado: 'parcialmente_devuelta' as any };
+        }
+        return v;
+      });
 
-    const nuevasVentas = state.ventas.map(v => {
-      if (v.id === selectedSale.id) {
-        return { ...v, estado: 'parcialmente_devuelta' as any };
-      }
-      return v;
-    });
+      // ===== ASIENTO CONTABLE CON TERMINAL EN REFERENCIA =====
+      const nuevoAsiento: LibroDiarioEntry = {
+        id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
+        fecha: ahoraStr,
+        tipo: 'egreso',
+        categoria: 'DEVOLUCION',
+        concepto: `DEVOLUCIÓN DINERO ${idDev} - REF VENTA ${selectedSale.id}`,
+        montoUSD: totalDevuelto,
+        montoBS: totalDevuelto * state.tasa,
+        metodo: refundMethod === 'EFECTIVO' ? 'efectivo_usd' : (refundMethod === 'MISMO_METODO' ? 'otros' : 'nota_credito'),
+        referencia: idDev + '-' + (terminalId || 'GLOBAL') // <--- AGREGADO TERMINAL ID
+      };
 
-    const nuevoAsiento: LibroDiarioEntry = {
-      id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
-      fecha: ahoraStr,
-      tipo: 'egreso',
-      categoria: 'DEVOLUCION',
-      concepto: `DEVOLUCIÓN DINERO ${idDev} - REF VENTA ${selectedSale.id}`,
-      montoUSD: totalDevuelto,
-      montoBS: totalDevuelto * state.tasa,
-      metodo: refundMethod === 'EFECTIVO' ? 'efectivo_usd' : (refundMethod === 'MISMO_METODO' ? 'otros' : 'nota_credito'),
-      referencia: idDev
-    };
+      updateState({
+        productos: nuevosProductos,
+        devoluciones: [nuevaDevolucion, ...(state.devoluciones || [])],
+        movimientos: [...state.movimientos, ...nuevosMovimientos],
+        ventas: nuevasVentas,
+        proximaDevolucion: (state.proximaDevolucion || 1) + 1,
+        libroDiario: [nuevoAsiento, ...(state.libroDiario || [])]
+      });
 
-    updateState({
-      productos: nuevosProductos,
-      devoluciones: [nuevaDevolucion, ...(state.devoluciones || [])],
-      movimientos: [...state.movimientos, ...nuevosMovimientos],
-      ventas: nuevasVentas,
-      proximaDevolucion: (state.proximaDevolucion || 1) + 1,
-      libroDiario: [nuevoAsiento, ...(state.libroDiario || [])]
-    });
-
-    alert(`Devolución ${idDev} procesada con éxito`);
-    setView('list');
-    setSelectedSale(null);
-    setReturnItems([]);
-    setMotivo('');
+      toast({ title: `Devolución ${idDev} procesada con éxito` });
+      setView('list');
+      setSelectedSale(null);
+      setReturnItems([]);
+      setMotivo('');
+    } catch (error) {
+      toast({ title: "Error al procesar la devolución", variant: "destructive" });
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
-  const anularFacturaCompleta = () => {
-    if (!selectedSale) return;
+  const anularFacturaCompleta = async () => {
+    if (!selectedSale || isProcessing) return;
     const pin = prompt('AUTORIZACIÓN REQUERIDA: Ingrese PIN de Seguridad:');
     if (pin !== state.pinDevolucion) return alert('PIN Incorrecto');
 
-    if (!confirm(`¿ESTÁ SEGURO DE ANULAR LA FACTURA ${selectedSale.id}?\nEsta acción devolverá todo el stock y anulará el ingreso de caja.`)) return;
+    if (!confirm(`¿ESTÁ SEGURO DE ANULAR LA FACTURA ${selectedSale.id}?\nEsta acción devolverá todo el stock al inventario.`)) return;
 
-    const ahoraStr = Utils.ahora();
-    const nuevosProductos = [...state.productos];
-    const nuevosMovimientos: Movimiento[] = [];
+    const representaEgreso = confirm("¿Esta anulación requiere el REINTEGRO DE DINERO físico al cliente?\n(Si confirma, se generará un asiento de EGRESO en contabilidad)");
 
-    selectedSale.items.forEach(item => {
-      const pIdx = nuevosProductos.findIndex(p => p.id === item.productoId);
-      if (pIdx >= 0) {
-        const p = nuevosProductos[pIdx];
-        const stockAntes = p.stock;
-        nuevosProductos[pIdx] = { ...p, stock: p.stock + item.cantidad };
-        
-        nuevosMovimientos.push({
-          id: Store.uid(),
-          productoId: item.productoId,
-          tipo: 'anulacion',
-          cantidad: item.cantidad,
-          stockAntes,
-          stockDespues: nuevosProductos[pIdx].stock,
+    setIsProcessing(true);
+    try {
+      const ahoraStr = Utils.ahora();
+      const nuevosProductos = [...state.productos];
+      const nuevosMovimientos: Movimiento[] = [];
+
+      selectedSale.items.forEach(item => {
+        const pIdx = nuevosProductos.findIndex(p => p.id === item.productoId);
+        if (pIdx >= 0) {
+          const p = nuevosProductos[pIdx];
+          const stockAntes = p.stock;
+          nuevosProductos[pIdx] = { ...p, stock: p.stock + item.cantidad };
+          
+          nuevosMovimientos.push({
+            id: Store.uid(),
+            productoId: item.productoId,
+            tipo: 'anulacion',
+            cantidad: item.cantidad,
+            stockAntes,
+            stockDespues: nuevosProductos[pIdx].stock,
+            fecha: ahoraStr,
+            referencia: `ANULACIÓN TOTAL FACTURA #${selectedSale.id}`,
+            terminalId: terminalId || 'GLOBAL'
+          });
+        }
+      });
+
+      const nuevasVentas = state.ventas.map(v => 
+        v.id === selectedSale.id ? { ...v, estado: 'anulada' } : v
+      );
+
+      const idAnu = 'ANU-' + String(state.proximaAnulacion || 1).padStart(5, '0');
+      const nuevaAnulacion: Anulacion = {
+        id: idAnu,
+        ventaId: selectedSale.id,
+        fecha: ahoraStr,
+        totalUSD: selectedSale.totalUSD,
+        motivo: 'ANULACIÓN TOTAL DE FACTURA POR OPERADOR',
+        items: [...selectedSale.items],
+        terminalId: terminalId || 'GLOBAL'
+      };
+
+      let nuevosAsientosDiario: LibroDiarioEntry[] = [];
+      if (representaEgreso) {
+        nuevosAsientosDiario.push({
+          id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
           fecha: ahoraStr,
-          referencia: `ANULACIÓN TOTAL FACTURA #${selectedSale.id}`,
-          terminalId: terminalId || 'GLOBAL'
+          tipo: 'egreso',
+          categoria: 'ANULACION',
+          concepto: `REINTEGRO POR ANULACIÓN FACTURA #${selectedSale.id}`,
+          montoUSD: selectedSale.totalUSD,
+          montoBS: selectedSale.totalBS,
+          metodo: selectedSale.metodoPago || 'otros',
+          referencia: idAnu + '-' + (terminalId || 'GLOBAL')
         });
       }
-    });
 
-    const nuevasVentas = state.ventas.map(v => 
-      v.id === selectedSale.id ? { ...v, estado: 'anulada' } : v
-    );
+      updateState({
+        productos: nuevosProductos,
+        ventas: nuevasVentas,
+        movimientos: [...state.movimientos, ...nuevosMovimientos],
+        anulaciones: [nuevaAnulacion, ...(state.anulaciones || [])],
+        libroDiario: representaEgreso ? [...nuevosAsientosDiario, ...(state.libroDiario || [])] : state.libroDiario,
+        proximaAnulacion: (state.proximaAnulacion || 1) + 1
+      });
 
-    const idAnu = 'ANU-' + String(state.proximaAnulacion || 1).padStart(5, '0');
-    const nuevaAnulacion: Anulacion = {
-      id: idAnu,
-      ventaId: selectedSale.id,
-      fecha: ahoraStr,
-      totalUSD: selectedSale.totalUSD,
-      motivo: 'ANULACIÓN TOTAL DE FACTURA POR OPERADOR',
-      items: [...selectedSale.items]
-    };
-
-    updateState({
-      productos: nuevosProductos,
-      ventas: nuevasVentas,
-      movimientos: [...state.movimientos, ...nuevosMovimientos],
-      anulaciones: [nuevaAnulacion, ...(state.anulaciones || [])],
-      proximaAnulacion: (state.proximaAnulacion || 1) + 1
-    });
-
-    toast({ title: "Factura Anulada", description: `El documento ${selectedSale.id} ha sido invalidado bajo el registro ${idAnu}.` });
-    setView('list');
-    setSelectedSale(null);
+      toast({ title: "Factura Anulada", description: `El documento ${selectedSale.id} ha sido invalidado bajo el registro ${idAnu}.` });
+      setView('list');
+      setSelectedSale(null);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const historialUnificado = useMemo(() => {
     const devs = (state.devoluciones || [])
-      .filter(d => !terminalId || state.ventas.find(v => v.id === d.ventaId)?.terminalId === terminalId)
+      .filter(d => !terminalId || d.terminalId === terminalId)
       .map(d => ({ ...d, tipoOperacion: 'DEVOLUCIÓN' }));
     
     const anus = (state.anulaciones || [])
-      .filter(a => !terminalId || state.ventas.find(v => v.id === a.ventaId)?.terminalId === terminalId)
+      .filter(a => !terminalId || a.terminalId === terminalId)
       .map(a => ({ ...a, tipoOperacion: 'ANULACIÓN', items: a.items || [] }));
     
     return [...devs, ...anus].sort((a, b) => b.fecha.localeCompare(a.fecha));
-  }, [state.devoluciones, state.anulaciones, state.ventas, terminalId]);
+  }, [state.devoluciones, state.anulaciones, terminalId]);
 
   return (
-    <div className="space-y-6 h-[calc(100vh-140px)] flex flex-col overflow-hidden">
+    <div className="h-[calc(100vh-140px)] flex flex-col overflow-hidden">
+      {/* Header fijo */}
       <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-line shadow-sm shrink-0">
         <div>
           <h2 className="text-ink font-black uppercase italic tracking-tighter text-xl flex items-center gap-2">
@@ -240,17 +276,18 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
         </div>
       </div>
 
-      {view === 'list' ? (
-        <div className="card shadow-lg animate-in fade-in duration-300 border-line bg-white flex-1 flex flex-col overflow-hidden">
-          <div className="card-head bg-surface-soft border-b border-line px-5 py-4 shrink-0">
-            <h3 className="text-ink font-black text-xs uppercase tracking-widest flex items-center gap-2">
-              <ClipboardList className="w-4 h-4 text-status-info" /> Historial de {terminalId ? `Terminal ${terminalId}` : 'Sistema'}
-            </h3>
-          </div>
-          <div className="flex-1 overflow-y-auto">
+      {/* Contenido scrollable */}
+      <div className="flex-1 overflow-y-auto mt-6">
+        {view === 'list' ? (
+          <div className="card shadow-lg animate-in fade-in duration-300 border-line bg-white">
+            <div className="card-head bg-surface-soft border-b border-line px-5 py-4">
+              <h3 className="text-ink font-black text-xs uppercase tracking-widest flex items-center gap-2">
+                <ClipboardList className="w-4 h-4 text-status-info" /> Historial de {terminalId ? `Terminal ${terminalId}` : 'Sistema'}
+              </h3>
+            </div>
             <div className="table-wrap">
               <table>
-                <thead className="sticky top-0 z-10">
+                <thead>
                   <tr className="bg-surface-soft">
                     <th className="text-ink font-black text-[10px] uppercase">ID Operación</th>
                     <th className="text-ink font-black text-[10px] uppercase">Tipo</th>
@@ -281,44 +318,43 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
               </table>
             </div>
           </div>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 overflow-hidden">
-          <div className="lg:col-span-2 space-y-4 flex flex-col overflow-hidden">
-            {!selectedSale ? (
-              <div className="card p-12 flex flex-col items-center justify-center text-center space-y-6 bg-white border-dashed border-2 border-line flex-1">
-                <div className="p-5 bg-surface-soft rounded-full"><Search className="w-10 h-10 text-ink/20" /></div>
-                <div className="max-w-xs space-y-2">
-                  <h3 className="text-ink font-black uppercase text-sm">Localizar Factura</h3>
-                  <p className="text-[10px] text-ink font-bold uppercase opacity-60">Solo se permiten reversiones de ventas generadas en este terminal por seguridad.</p>
-                </div>
-                <div className="flex gap-2 w-full max-w-sm">
-                  <input 
-                    className="form-input flex-1 h-12 bg-white border-line text-ink font-black uppercase" 
-                    placeholder="Ej: 000000024"
-                    value={saleSearch}
-                    onChange={e => setSaleSearch(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && buscarVenta()}
-                  />
-                  <button onClick={buscarVenta} className="btn btn-primary h-12 px-6 font-black uppercase text-xs shadow-md">Buscar</button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4 flex flex-col overflow-hidden flex-1">
-                <div className="card bg-white border-status-info/30 shrink-0">
-                  <div className="card-head py-3 px-5 border-b border-line flex justify-between items-center">
-                    <h3 className="text-status-info font-black uppercase text-xs">Venta Original: {selectedSale.id}</h3>
-                    <div className="flex gap-2">
-                       <button onClick={anularFacturaCompleta} className="btn btn-danger h-8 px-4 font-black uppercase text-[9px] flex items-center gap-2">
-                         <ShieldX className="w-3.5 h-3.5" /> ANULACIÓN TOTAL
-                       </button>
-                       <button onClick={() => setSelectedSale(null)} className="text-ink/40 hover:text-ink"><X className="w-4 h-4"/></button>
-                    </div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* COLUMNA IZQUIERDA */}
+            <div className="lg:col-span-2 space-y-4">
+              {!selectedSale ? (
+                <div className="card p-12 flex flex-col items-center justify-center text-center space-y-6 bg-white border-dashed border-2 border-line">
+                  <div className="p-5 bg-surface-soft rounded-full"><Search className="w-10 h-10 text-ink/20" /></div>
+                  <div className="max-w-xs space-y-2">
+                    <h3 className="text-ink font-black uppercase text-sm">Localizar Factura</h3>
+                    <p className="text-[10px] text-ink font-bold uppercase opacity-60">Solo se permiten reversiones de ventas generadas en este terminal por seguridad.</p>
                   </div>
-                  <div className="max-h-[400px] overflow-y-auto">
+                  <div className="flex gap-2 w-full max-w-sm">
+                    <input 
+                      className="form-input flex-1 h-12 bg-white border-line text-ink font-black uppercase" 
+                      placeholder="Ej: 000000024"
+                      value={saleSearch}
+                      onChange={e => setSaleSearch(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && buscarVenta()}
+                    />
+                    <button onClick={buscarVenta} className="btn btn-primary h-12 px-6 font-black uppercase text-xs shadow-md">Buscar</button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="card bg-white border-status-info/30">
+                    <div className="card-head py-3 px-5 border-b border-line flex justify-between items-center">
+                      <h3 className="text-status-info font-black uppercase text-xs">Venta Original: {selectedSale.id}</h3>
+                      <div className="flex gap-2">
+                         <button onClick={anularFacturaCompleta} disabled={isProcessing} className="btn btn-danger h-8 px-4 font-black uppercase text-[9px] flex items-center gap-2">
+                           {isProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldX className="w-3.5 h-3.5" />} ANULACIÓN TOTAL
+                         </button>
+                         <button onClick={() => setSelectedSale(null)} className="text-ink/40 hover:text-ink"><X className="w-4 h-4"/></button>
+                      </div>
+                    </div>
                     <div className="table-wrap">
                       <table>
-                        <thead className="sticky top-0 z-10">
+                        <thead>
                           <tr className="bg-surface-soft">
                             <th className="text-[9px] uppercase font-black text-ink">Producto</th>
                             <th className="text-[9px] uppercase text-center font-black text-ink">Cant. Compra</th>
@@ -346,18 +382,16 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
                       </table>
                     </div>
                   </div>
-                </div>
 
-                <div className="card bg-white border-line shadow-sm flex-1 flex flex-col overflow-hidden">
-                  <div className="card-head py-3 px-5 border-b border-line shrink-0">
-                    <h3 className="text-status-danger font-black uppercase text-xs flex items-center gap-2">
-                      <Undo2 className="w-4 h-4"/> Ítems en la Devolución Actual
-                    </h3>
-                  </div>
-                  <div className="flex-1 overflow-y-auto">
+                  <div className="card bg-white border-line shadow-sm">
+                    <div className="card-head py-3 px-5 border-b border-line">
+                      <h3 className="text-status-danger font-black uppercase text-xs flex items-center gap-2">
+                        <Undo2 className="w-4 h-4"/> Ítems en la Devolución Actual
+                      </h3>
+                    </div>
                     <div className="table-wrap">
                       <table>
-                        <thead className="sticky top-0 z-10">
+                        <thead>
                           <tr className="bg-surface-soft">
                             <th className="text-[9px] uppercase font-black text-ink">Producto</th>
                             <th className="text-[9px] uppercase text-center font-black text-ink">Cant.</th>
@@ -389,19 +423,17 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
                       </table>
                     </div>
                   </div>
-                </div>
-              </div>
-            )}
-          </div>
+                </>
+              )}
+            </div>
 
-          {/* ===== PANEL LATERAL - SOLO SE MUESTRA CUANDO HAY FACTURA SELECCIONADA ===== */}
-          {selectedSale && (
-            <div className="flex flex-col h-full overflow-y-auto pb-4 space-y-0">
-              <div className="card bg-white border-line shadow-lg flex-1 flex flex-col overflow-hidden">
-                <div className="card-head py-4 px-6 border-b border-line bg-surface-soft shrink-0">
+            {/* COLUMNA DERECHA - Confirmar Devolución */}
+            <div className="space-y-6">
+              <div className="card bg-white border-line shadow-lg">
+                <div className="card-head py-4 px-6 border-b border-line bg-surface-soft">
                   <h3 className="text-ink font-black uppercase text-xs">Confirmar Devolución Parcial</h3>
                 </div>
-                <div className="card-body p-6 space-y-6 flex-1 overflow-y-auto">
+                <div className="card-body p-6 space-y-6">
                   <div className="bg-surface-soft p-4 rounded-lg border border-line text-center shadow-inner">
                     <p className="text-ink/60 text-[9px] font-black uppercase mb-1">Total a Reembolsar</p>
                     <p className="text-3xl font-black text-status-danger">
@@ -416,7 +448,7 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
                       value={refundMethod}
                       onChange={e => setRefundMethod(e.target.value as any)}
                     >
-                      <option value="EFECTIVO">Efectivo de Caja</option>
+                      <option value="EFECTIVO">Efectivo Bs.</option>
                       <option value="MISMO_METODO">Reverso (Mismo Método)</option>
                       <option value="CREDITO_TIENDA">Crédito / Vale Interno</option>
                     </select>
@@ -438,18 +470,19 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
                   </div>
 
                   <button 
-                    disabled={returnItems.length === 0 || !reason.trim()}
+                    disabled={returnItems.length === 0 || !reason.trim() || isProcessing}
                     onClick={procesarDevolucion}
-                    className="btn btn-primary w-full h-14 font-black uppercase text-xs shadow-xl shadow-status-danger/10 disabled:opacity-20 transition-all"
+                    className="btn btn-primary w-full h-14 font-black uppercase text-xs shadow-xl shadow-status-danger/10 disabled:opacity-20 transition-all flex items-center justify-center gap-2"
                   >
+                    {isProcessing && <Loader2 className="w-4 h-4 animate-spin" />}
                     Confirmar Devolución
                   </button>
                 </div>
               </div>
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

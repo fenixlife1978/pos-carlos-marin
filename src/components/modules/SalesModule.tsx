@@ -181,15 +181,29 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     return auth?.currentUser ? state.terminales.find(t => t.usuarioId === auth.currentUser!.uid) : null;
   }, [state.terminales]);
 
+  // ===== CORRECCIÓN: getFreshReportData - DEVOLUCIONES Y ANULACIONES DIRECTAS POR TERMINAL =====
   const getFreshReportData = () => {
     const corteTimestamp = state.fechaUltimoZ || '';
     const termId = currentTerminal?.id || 'GLOBAL';
     
+    // Ventas activas (no anuladas) de este terminal
     const vActivas = (state.ventas || []).filter(v => v.fecha > corteTimestamp && v.estado !== 'anulada' && v.terminalId === termId);
-    const vAnuladas = (state.ventas || []).filter(v => v.fecha > corteTimestamp && v.estado === 'anulada' && v.terminalId === termId);
-    const dHoy = (state.devoluciones || []).filter(d => d.fecha > corteTimestamp && (state.ventas.find(v => v.id === d.ventaId)?.terminalId === termId));
     
-    // ===== IDENTIFICAR VENTAS DE EFECTIVO =====
+    // ===== DEVOLUCIONES DIRECTAS =====
+    const dHoy = (state.devoluciones || [])
+      .filter(d => d.fecha > corteTimestamp && d.terminalId === termId);
+    const devUSD = dHoy.reduce((s, d) => s + d.totalUSD, 0);
+
+    // ===== ANULACIONES DIRECTAS =====
+    const anulacionesHoy = (state.anulaciones || [])
+      .filter(a => a.fecha > corteTimestamp && a.terminalId === termId);
+    const cantidadAnuladas = anulacionesHoy.length;
+
+    // (Opcional) Ventas anuladas para control de documentos (ya no se usan en estadísticas)
+    const vAnuladas = (state.ventas || [])
+      .filter(v => v.fecha > corteTimestamp && v.estado === 'anulada' && v.terminalId === termId);
+
+    // ===== FILTRAR VENTAS DE EFECTIVO =====
     const ventasEfectivo = vActivas.filter(v => 
       v.type === 'VENTA EFECTIVO BS' || 
       (v.items && v.items.some(item => item.productoId === 'SERVICIO_EFECTIVO'))
@@ -200,7 +214,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     );
     
     const brUSD = ventasNormales.reduce((s, v) => s + v.totalUSD, 0);
-    const devUSD = dHoy.reduce((s, d) => s + d.totalUSD, 0);
     const descUSD = ventasNormales.reduce((s, v) => s + (v.descuentoUSD || 0), 0);
     const netUSD = brUSD - devUSD - descUSD;
 
@@ -255,7 +268,12 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       fondoAperturaUSD: state.fondoCajaHoyUSD || 0,
       fondoAperturaBS: state.fondoCajaHoyBS || 0,
       desdeFactura, hastaFactura, desdeNC, hastaNC,
-      stats: { facturas: vActivas.length, devoluciones: dHoy.length, anulaciones: vAnuladas.length, ticketPromedio: vActivas.length > 0 ? (netUSD / vActivas.length) : 0 },
+      stats: { 
+        facturas: vActivas.length, 
+        devoluciones: dHoy.length, 
+        anulaciones: cantidadAnuladas, 
+        ticketPromedio: vActivas.length > 0 ? (netUSD / vActivas.length) : 0 
+      },
       fecha: Utils.ahora(), terminalName, terminalId: termId, numeroZ: state.ultimoZ + 1, acumuladoHistoricoUSD: state.acumuladoHistorico + netUSD,
       ventaEfectivo: {
         totalVendidoUSD: efectivoVendidoUSD,
@@ -371,7 +389,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     setPagos([]);
   };
 
-  // ===== NUEVA FUNCIÓN PARA ACTUALIZAR CANTIDAD DESDE INPUT =====
   const handleQtyChange = (idx: number, newQty: number) => {
     const nuevo = [...state.carrito];
     const item = nuevo[idx];
@@ -714,6 +731,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     setTimeout(() => ejecutarVentaACredito(customer), 100);
   };
 
+  // ===== CORRECCIÓN: VENTA DE EFECTIVO - SOLO COMISIÓN =====
   const procesarVentaEfectivo = (data: {
     montoEfectivoBS: number;
     totalAPagarBS: number;
@@ -727,6 +745,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
 
     const totalUSD = data.totalAPagarBS / state.tasa;
     const efectivoUSD = data.montoEfectivoBS / state.tasa;
+    const comisionUSD = totalUSD - efectivoUSD;
+    const comisionBS = data.totalAPagarBS - data.montoEfectivoBS;
 
     const itemEspecial = {
       productoId: 'SERVICIO_EFECTIVO',
@@ -765,33 +785,23 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       tasa: state.tasa
     };
 
-    const salidaEfectivo: LibroDiarioEntry = {
-      id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
-      fecha: ahoraStr,
-      tipo: 'egreso',
-      categoria: 'VENTA_EFECTIVO',
-      concepto: `VENTA DE EFECTIVO #${reciboId} - CLIENTE: ${cliente?.toUpperCase() || 'CONSUMIDOR FINAL'}`,
-      montoUSD: efectivoUSD,
-      montoBS: data.montoEfectivoBS,
-      metodo: 'efectivo_bs',
-      referencia: reciboId + '-' + (terminal?.id || 'GLOBAL')
-    };
-
-    const ingresoComision: LibroDiarioEntry = {
+    // ===== ASIENTO CONTABLE: Solo se registra la COMISIÓN =====
+    const asientoComision: LibroDiarioEntry = {
       id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
       fecha: ahoraStr,
       tipo: 'ingreso',
       categoria: 'COMISION_EFECTIVO',
-      concepto: `COMISIÓN POR VENTA DE EFECTIVO #${reciboId} - ${data.comision}%`,
-      montoUSD: totalUSD - efectivoUSD,
-      montoBS: data.totalAPagarBS - data.montoEfectivoBS,
+      concepto: `COMISIÓN POR VENTA DE EFECTIVO: Bs. ${data.montoEfectivoBS.toFixed(2)} entregados (USD ${efectivoUSD.toFixed(2)}), comisión ${data.comision}% = USD ${comisionUSD.toFixed(2)} (Bs. ${comisionBS.toFixed(2)})`,
+      montoUSD: comisionUSD,
+      montoBS: comisionBS,
       metodo: data.metodoPago as PaymentMethod,
       referencia: reciboId + '-' + (terminal?.id || 'GLOBAL')
     };
 
+    // ===== SOLO SE GUARDA EL ASIENTO DE COMISIÓN =====
     updateState({
       ventas: [...state.ventas, nuevaVenta],
-      libroDiario: [...(state.libroDiario || []), salidaEfectivo, ingresoComision],
+      libroDiario: [...(state.libroDiario || []), asientoComision],
       proximoRecibo: state.proximoRecibo + 1,
       terminales: state.terminales.map(t => 
         t.id === terminal?.id ? { ...t, proximoRecibo: t.proximoRecibo + 1 } : t
@@ -912,7 +922,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                       <div key={i} className="grid grid-cols-[1fr_80px_70px_35px_80px_80px_80px_35px] gap-1 items-center px-3 py-3 bg-white border-b border-black/5 text-ink">
                         <div className="truncate font-black text-xs uppercase leading-tight">{item.nombre}</div>
                         
-                        {/* ===== CANTIDAD EDITABLE ===== */}
                         <div className="flex justify-center">
                           <input
                             type="number"
