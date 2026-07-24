@@ -315,7 +315,7 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
                        <button onClick={() => setSelectedSale(null)} className="text-ink/40 hover:text-ink"><X className="w-4 h-4"/></button>
                     </div>
                   </div>
-                  <div className="max-h-[200px] overflow-y-auto">
+                  <div className="max-h-[400px] overflow-y-auto">
                     <div className="table-wrap">
                       <table>
                         <thead className="sticky top-0 z-10">
@@ -394,58 +394,60 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
             )}
           </div>
 
-          {/* Panel lateral - CON SCROLL */}
-          <div className="space-y-6 overflow-y-auto pb-4">
-            <div className="card bg-white border-line shadow-lg">
-              <div className="card-head py-4 px-6 border-b border-line bg-surface-soft shrink-0">
-                <h3 className="text-ink font-black uppercase text-xs">Confirmar Devolución Parcial</h3>
-              </div>
-              <div className="card-body p-6 space-y-6">
-                <div className="bg-surface-soft p-4 rounded-lg border border-line text-center shadow-inner">
-                  <p className="text-ink/60 text-[9px] font-black uppercase mb-1">Total a Reembolsar</p>
-                  <p className="text-3xl font-black text-status-danger">
-                    {Utils.fmtUSD(returnItems.reduce((s, i) => s + (i.cantidad * i.precioUnitUSD), 0))}
-                  </p>
+          {/* ===== PANEL LATERAL - SOLO SE MUESTRA CUANDO HAY FACTURA SELECCIONADA ===== */}
+          {selectedSale && (
+            <div className="flex flex-col h-full overflow-y-auto pb-4 space-y-0">
+              <div className="card bg-white border-line shadow-lg flex-1 flex flex-col overflow-hidden">
+                <div className="card-head py-4 px-6 border-b border-line bg-surface-soft shrink-0">
+                  <h3 className="text-ink font-black uppercase text-xs">Confirmar Devolución Parcial</h3>
                 </div>
+                <div className="card-body p-6 space-y-6 flex-1 overflow-y-auto">
+                  <div className="bg-surface-soft p-4 rounded-lg border border-line text-center shadow-inner">
+                    <p className="text-ink/60 text-[9px] font-black uppercase mb-1">Total a Reembolsar</p>
+                    <p className="text-3xl font-black text-status-danger">
+                      {Utils.fmtUSD(returnItems.reduce((s, i) => s + (i.cantidad * i.precioUnitUSD), 0))}
+                    </p>
+                  </div>
 
-                <div className="form-group">
-                  <label className="text-ink text-[10px] font-black uppercase block mb-1">Método de Reembolso</label>
-                  <select 
-                    className="form-select bg-white text-ink h-11 text-xs font-black uppercase border-line shadow-sm rounded-md w-full px-3"
-                    value={refundMethod}
-                    onChange={e => setRefundMethod(e.target.value as any)}
+                  <div className="form-group">
+                    <label className="text-ink text-[10px] font-black uppercase block mb-1">Método de Reembolso</label>
+                    <select 
+                      className="form-select bg-white text-ink h-11 text-xs font-black uppercase border-line shadow-sm rounded-md w-full px-3"
+                      value={refundMethod}
+                      onChange={e => setRefundMethod(e.target.value as any)}
+                    >
+                      <option value="EFECTIVO">Efectivo de Caja</option>
+                      <option value="MISMO_METODO">Reverso (Mismo Método)</option>
+                      <option value="CREDITO_TIENDA">Crédito / Vale Interno</option>
+                    </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="text-ink text-[10px] font-black uppercase block mb-1">Motivo / Observaciones</label>
+                    <textarea 
+                      className="form-input bg-white text-ink text-xs min-h-[100px] border-line py-3 w-full"
+                      placeholder="Describa el porqué de esta operación..."
+                      value={reason}
+                      onChange={e => setMotivo(e.target.value)}
+                    ></textarea>
+                  </div>
+
+                  <div className="p-3 bg-status-danger-soft rounded border border-status-danger/20 flex gap-3">
+                     <AlertTriangle className="w-5 h-5 text-status-danger shrink-0" />
+                     <p className="text-[9px] text-ink font-bold leading-tight opacity-70">Esta acción generará una nota de crédito y ajustará el inventario. La factura original se mantendrá como parcialmente devuelta.</p>
+                  </div>
+
+                  <button 
+                    disabled={returnItems.length === 0 || !reason.trim()}
+                    onClick={procesarDevolucion}
+                    className="btn btn-primary w-full h-14 font-black uppercase text-xs shadow-xl shadow-status-danger/10 disabled:opacity-20 transition-all"
                   >
-                    <option value="EFECTIVO">Efectivo de Caja</option>
-                    <option value="MISMO_METODO">Reverso (Mismo Método)</option>
-                    <option value="CREDITO_TIENDA">Crédito / Vale Interno</option>
-                  </select>
+                    Confirmar Devolución
+                  </button>
                 </div>
-
-                <div className="form-group">
-                  <label className="text-ink text-[10px] font-black uppercase block mb-1">Motivo / Observaciones</label>
-                  <textarea 
-                    className="form-input bg-white text-ink text-xs min-h-[100px] border-line py-3"
-                    placeholder="Describa el porqué de esta operación..."
-                    value={reason}
-                    onChange={e => setMotivo(e.target.value)}
-                  ></textarea>
-                </div>
-
-                <div className="p-3 bg-status-danger-soft rounded border border-status-danger/20 flex gap-3">
-                   <AlertTriangle className="w-5 h-5 text-status-danger shrink-0" />
-                   <p className="text-[9px] text-ink font-bold leading-tight opacity-70">Esta acción generará una nota de crédito y ajustará el inventario. La factura original se mantendrá como parcialmente devuelta.</p>
-                </div>
-
-                <button 
-                  disabled={returnItems.length === 0 || !reason.trim()}
-                  onClick={procesarDevolucion}
-                  className="btn btn-primary w-full h-14 font-black uppercase text-xs shadow-xl shadow-status-danger/10 disabled:opacity-20 transition-all"
-                >
-                  Confirmar Devolución
-                </button>
               </div>
             </div>
-          </div>
+          )}
         </div>
       )}
     </div>
