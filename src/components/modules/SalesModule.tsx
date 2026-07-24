@@ -189,7 +189,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     const vAnuladas = (state.ventas || []).filter(v => v.fecha > corteTimestamp && v.estado === 'anulada' && v.terminalId === termId);
     const dHoy = (state.devoluciones || []).filter(d => d.fecha > corteTimestamp && (state.ventas.find(v => v.id === d.ventaId)?.terminalId === termId));
     
-    // ===== CORREGIDO: IDENTIFICAR VENTAS DE EFECTIVO POR TYPE Y POR ITEM =====
+    // ===== IDENTIFICAR VENTAS DE EFECTIVO =====
     const ventasEfectivo = vActivas.filter(v => 
       v.type === 'VENTA EFECTIVO BS' || 
       (v.items && v.items.some(item => item.productoId === 'SERVICIO_EFECTIVO'))
@@ -204,17 +204,14 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     const descUSD = ventasNormales.reduce((s, v) => s + (v.descuentoUSD || 0), 0);
     const netUSD = brUSD - devUSD - descUSD;
 
-    // ===== DATOS DE VENTA DE EFECTIVO =====
     const efectivoVendidoUSD = ventasEfectivo.reduce((s, v) => s + v.totalUSD, 0);
     const efectivoVendidoBS = ventasEfectivo.reduce((s, v) => s + v.totalBS, 0);
     
-    // Calcular comisiones desde el libro diario
     const comisionesUSD = (state.libroDiario || [])
       .filter(e => e.fecha > corteTimestamp && e.categoria === 'COMISION_EFECTIVO' && e.referencia.includes(termId))
       .reduce((s, e) => s + e.montoUSD, 0);
     const comisionesBS = comisionesUSD * state.tasa;
     
-    // Calcular efectivo entregado desde el libro diario
     const salidasEfectivo = (state.libroDiario || [])
       .filter(e => e.fecha > corteTimestamp && e.categoria === 'VENTA_EFECTIVO' && e.referencia.includes(termId))
       .reduce((s, e) => s + e.montoUSD, 0);
@@ -369,6 +366,27 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     else if (n <= stockAvail) {
       item.cantidad = n;
       item.subtotalUSD = n * item.precioUnitUSD;
+    }
+    updateState({ carrito: nuevo });
+    setPagos([]);
+  };
+
+  // ===== NUEVA FUNCIÓN PARA ACTUALIZAR CANTIDAD DESDE INPUT =====
+  const handleQtyChange = (idx: number, newQty: number) => {
+    const nuevo = [...state.carrito];
+    const item = nuevo[idx];
+    const p = state.productos.find(x => x.id === item.productoId);
+    if (!p) return;
+    const stockAvail = getStockDisponible(p);
+    
+    if (newQty <= 0) {
+      nuevo.splice(idx, 1);
+    } else if (newQty <= stockAvail) {
+      item.cantidad = newQty;
+      item.subtotalUSD = newQty * item.precioUnitUSD;
+    } else {
+      toast({ variant: "destructive", title: `Stock insuficiente (máx: ${stockAvail})` });
+      return;
     }
     updateState({ carrito: nuevo });
     setPagos([]);
@@ -786,7 +804,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       duration: 5000
     });
 
-    // Cierre automático del modal
     setShowCashSaleModal(false);
   };
 
@@ -879,7 +896,14 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
             <div className="w-3/4 flex flex-col gap-2 overflow-hidden">
               <div className="card flex-1 flex flex-col overflow-hidden bg-white border-none shadow-xl">
                 <div className="grid grid-cols-[1fr_80px_70px_35px_80px_80px_80px_35px] gap-1 px-3 py-3 bg-ink text-white text-[10px] font-black uppercase tracking-[0.12em] rounded-t-lg">
-                  <div>Descripción</div><div className="text-center">Cant</div><div className="text-center">U.M.</div><div /> <div className="text-right">Precio ($)</div><div className="text-right">Precio (Bs)</div><div className="text-right">Total</div><div className="text-center"></div>
+                  <div>Descripción</div>
+                  <div className="text-center">Cant</div>
+                  <div className="text-center">U.M.</div>
+                  <div />
+                  <div className="text-right">Precio ($)</div>
+                  <div className="text-right">Precio (Bs)</div>
+                  <div className="text-right">Total</div>
+                  <div className="text-center"></div>
                 </div>
                 <div className="flex-1 overflow-y-auto p-1 space-y-1">
                   {state.carrito.map((item, i) => {
@@ -887,7 +911,30 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                     return (
                       <div key={i} className="grid grid-cols-[1fr_80px_70px_35px_80px_80px_80px_35px] gap-1 items-center px-3 py-3 bg-white border-b border-black/5 text-ink">
                         <div className="truncate font-black text-xs uppercase leading-tight">{item.nombre}</div>
-                        <div className="flex items-center justify-center gap-1 bg-surface-soft rounded p-0.5 border border-line/30"><button onClick={() => updateQty(i, -1)} className="text-ink font-black text-sm px-1.5">-</button><span className="w-5 text-center text-xs font-black">{item.cantidad}</span><button onClick={() => updateQty(i, 1)} className="text-ink font-black text-sm px-1.5">+</button></div>
+                        
+                        {/* ===== CANTIDAD EDITABLE ===== */}
+                        <div className="flex justify-center">
+                          <input
+                            type="number"
+                            step="any"
+                            min="0"
+                            className="w-16 h-7 text-center font-black text-xs bg-surface-soft border border-line/30 rounded focus:ring-2 focus:ring-[#D4A017] focus:outline-none"
+                            value={item.cantidad}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              if (!isNaN(val) && val >= 0) {
+                                handleQtyChange(i, val);
+                              }
+                            }}
+                            onBlur={(e) => {
+                              const val = parseFloat(e.target.value);
+                              if (isNaN(val) || val < 0) {
+                                handleQtyChange(i, 0);
+                              }
+                            }}
+                          />
+                        </div>
+                        
                         <div className="text-center text-[10px] font-black uppercase">{prod?.cantidad || '-'}</div>
                         <div className="flex justify-center">
                           <button 
@@ -901,14 +948,23 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                         <div className="text-right text-xs font-black">{Utils.fmtUSD(item.precioUnitUSD)}</div>
                         <div className="text-right text-xs font-black">{Utils.fmtBS(item.precioUnitUSD * state.tasa)}</div>
                         <div className="text-right text-sm font-black">{Utils.fmtUSD(item.subtotalUSD)}</div>
-                        <div className="flex justify-center"><button onClick={() => updateQty(i, -item.cantidad)} className="text-ink/20 hover:text-red-600"><Trash2 className="w-4 h-4"/></button></div>
+                        <div className="flex justify-center">
+                          <button onClick={() => updateQty(i, -item.cantidad)} className="text-ink/20 hover:text-red-600">
+                            <Trash2 className="w-4 h-4"/>
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
                 </div>
                 <div className="p-4 bg-ink border-t border-line/10 flex items-center justify-between rounded-b-lg gap-6">
-                  <div className="space-y-0 shrink-0"><label className="text-white/60 text-[8px] font-black uppercase block tracking-widest mb-1">TOTAL FACTURA</label><div className="text-4xl font-black text-brand-gold leading-none">{Utils.fmtUSD(subtotalUSD)}</div></div>
-                  <div className="flex-1 flex justify-end items-center pr-4"><div className="text-4xl font-black text-white">{Utils.fmtBS(totalBS)}</div></div>
+                  <div className="space-y-0 shrink-0">
+                    <label className="text-white/60 text-[8px] font-black uppercase block tracking-widest mb-1">TOTAL FACTURA</label>
+                    <div className="text-4xl font-black text-brand-gold leading-none">{Utils.fmtUSD(subtotalUSD)}</div>
+                  </div>
+                  <div className="flex-1 flex justify-end items-center pr-4">
+                    <div className="text-4xl font-black text-white">{Utils.fmtBS(totalBS)}</div>
+                  </div>
                   
                   <div className="flex items-center gap-3">
                     {isFullScreen && (
@@ -920,7 +976,11 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                         <Minimize2 className="w-6 h-6" />
                       </button>
                     )}
-                    <button onClick={() => saldoRestanteUSD <= 0.01 && state.carrito.length > 0 ? ejecutarVenta() : setShowMultiModal(true)} disabled={state.carrito.length === 0 || isProcessing} className="w-14 h-14 bg-[#c8952e] text-black rounded-full shadow-lg flex items-center justify-center hover:bg-[#d9a540] transition-all transform hover:scale-105 active:scale-95 disabled:opacity-20 shrink-0">
+                    <button 
+                      onClick={() => saldoRestanteUSD <= 0.01 && state.carrito.length > 0 ? ejecutarVenta() : setShowMultiModal(true)} 
+                      disabled={state.carrito.length === 0 || isProcessing} 
+                      className="w-14 h-14 bg-[#c8952e] text-black rounded-full shadow-lg flex items-center justify-center hover:bg-[#d9a540] transition-all transform hover:scale-105 active:scale-95 disabled:opacity-20 shrink-0"
+                    >
                       {isProcessing ? <Loader2 className="w-8 h-8 animate-spin" /> : (saldoRestanteUSD <= 0.01 && state.carrito.length > 0 ? <Check className="w-8 h-8" /> : <Wallet className="w-8 h-8" />)}
                     </button>
                   </div>
@@ -931,13 +991,44 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         </div>
       ) : view === 'history' ? (
         <div className="card flex-1 bg-white flex flex-col overflow-hidden animate-in slide-in-from-bottom-2 duration-300 rounded-xl">
-          <div className="card-head px-6 py-4 bg-ink border-b border-white/10 flex justify-between items-center"><h3 className="text-white font-black uppercase italic tracking-tighter flex items-center gap-2 text-xs"><History className="w-5 h-5 text-brand-gold" /> HISTORIAL TERMINAL: {currentTerminal?.nombre || 'S/T'}</h3><button onClick={() => setView('pos')} className="btn btn-sm bg-white text-ink hover:bg-surface-soft flex items-center gap-2 font-black uppercase text-[10px] rounded-lg border-none px-4"><ArrowLeft className="w-3.5 h-3.5"/> Volver al POS</button></div>
+          <div className="card-head px-6 py-4 bg-ink border-b border-white/10 flex justify-between items-center">
+            <h3 className="text-white font-black uppercase italic tracking-tighter flex items-center gap-2 text-xs">
+              <History className="w-5 h-5 text-brand-gold" /> HISTORIAL TERMINAL: {currentTerminal?.nombre || 'S/T'}
+            </h3>
+            <button onClick={() => setView('pos')} className="btn btn-sm bg-white text-ink hover:bg-surface-soft flex items-center gap-2 font-black uppercase text-[10px] rounded-lg border-none px-4">
+              <ArrowLeft className="w-3.5 h-3.5"/> Volver al POS
+            </button>
+          </div>
           <div className="table-wrap flex-1 overflow-y-auto">
             <table>
-              <thead><tr><th>Recibo</th><th>Hora</th><th>Terminal</th><th>Cliente</th><th>Tipo</th><th className="text-right">Monto USD</th><th>Método</th><th className="text-center">Estado</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>Recibo</th>
+                  <th>Hora</th>
+                  <th>Terminal</th>
+                  <th>Cliente</th>
+                  <th>Tipo</th>
+                  <th className="text-right">Monto USD</th>
+                  <th>Método</th>
+                  <th className="text-center">Estado</th>
+                </tr>
+              </thead>
               <tbody>
                 {(state.ventas || []).filter(v => v.terminalId === currentTerminal?.id && v.fecha > (state.fechaUltimoZ || '')).sort((a,b) => b.fecha.localeCompare(a.fecha)).map(v => (
-                  <tr key={v.id} className="border-b border-line/40 hover:bg-surface-warm/20"><td className="text-ink font-black text-xs mono">{v.id}</td><td className="text-ink font-bold text-xs">{v.fecha.split('T')[1]?.slice(0, 5)}</td><td className="text-ink font-black text-[10px] uppercase">{v.terminalName || state.terminales.find(t => t.id === v.terminalId)?.nombre || '-'}</td><td className="text-ink font-black text-xs uppercase truncate max-w-[150px]">{v.cliente}</td><td className="text-ink font-black text-[9px] uppercase"><span className={`badge ${v.type === 'COBRO DEUDA' ? 'badge-info' : 'badge-neutral'}`}>{v.type || 'VENTA'}</span></td><td className="text-brand-gold-deep font-black text-xs text-right">{Utils.fmtUSD(v.totalUSD)}</td><td className="text-ink font-bold text-[10px] uppercase">{Utils.metodoLabel(v.metodoPago)}</td><td className="text-center"><span className={`badge ${v.estado === 'pendiente' ? 'badge-warn' : (v.estado === 'anulada' ? 'badge-err' : 'badge-ok')} font-black text-[9px] uppercase`}>{v.estado}</span></td></tr>
+                  <tr key={v.id} className="border-b border-line/40 hover:bg-surface-warm/20">
+                    <td className="text-ink font-black text-xs mono">{v.id}</td>
+                    <td className="text-ink font-bold text-xs">{v.fecha.split('T')[1]?.slice(0, 5)}</td>
+                    <td className="text-ink font-black text-[10px] uppercase">{v.terminalName || state.terminales.find(t => t.id === v.terminalId)?.nombre || '-'}</td>
+                    <td className="text-ink font-black text-xs uppercase truncate max-w-[150px]">{v.cliente}</td>
+                    <td className="text-ink font-black text-[9px] uppercase">
+                      <span className={`badge ${v.type === 'COBRO DEUDA' ? 'badge-info' : 'badge-neutral'}`}>{v.type || 'VENTA'}</span>
+                    </td>
+                    <td className="text-brand-gold-deep font-black text-xs text-right">{Utils.fmtUSD(v.totalUSD)}</td>
+                    <td className="text-ink font-bold text-[10px] uppercase">{Utils.metodoLabel(v.metodoPago)}</td>
+                    <td className="text-center">
+                      <span className={`badge ${v.estado === 'pendiente' ? 'badge-warn' : (v.estado === 'anulada' ? 'badge-err' : 'badge-ok')} font-black text-[9px] uppercase`}>{v.estado}</span>
+                    </td>
+                  </tr>
                 ))}
               </tbody>
             </table>
@@ -945,7 +1036,14 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         </div>
       ) : view === 'credits' ? (
         <div className="card flex-1 bg-white flex flex-col overflow-hidden animate-in slide-in-from-bottom-2 duration-300 rounded-xl">
-          <div className="card-head px-6 py-4 bg-ink border-b border-white/10 flex justify-between items-center"><h3 className="text-white font-black uppercase italic tracking-tighter flex items-center gap-2 text-xs"><ClipboardList className="w-5 h-5 text-brand-gold" /> CONSULTA CRÉDITOS Y COBRANZA (GLOBAL)</h3><button onClick={() => setView('pos')} className="btn btn-sm bg-white text-ink hover:bg-surface-soft flex items-center gap-2 font-black uppercase text-[10px] rounded-lg border-none px-4"><ArrowLeft className="w-3.5 h-3.5"/> Volver al POS</button></div>
+          <div className="card-head px-6 py-4 bg-ink border-b border-white/10 flex justify-between items-center">
+            <h3 className="text-white font-black uppercase italic tracking-tighter flex items-center gap-2 text-xs">
+              <ClipboardList className="w-5 h-5 text-brand-gold" /> CONSULTA CRÉDITOS Y COBRANZA (GLOBAL)
+            </h3>
+            <button onClick={() => setView('pos')} className="btn btn-sm bg-white text-ink hover:bg-surface-soft flex items-center gap-2 font-black uppercase text-[10px] rounded-lg border-none px-4">
+              <ArrowLeft className="w-3.5 h-3.5"/> Volver al POS
+            </button>
+          </div>
           <div className="table-wrap flex-1 overflow-y-auto">
             <table className="w-full">
               <thead>
@@ -966,21 +1064,54 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                     <React.Fragment key={clientName}>
                       <tr className="border-b border-line hover:bg-surface-warm/20 transition-colors">
                         <td className="px-6 py-4">
-                           <button onClick={() => setExpandedClient(expandedClient === clientName ? null : clientName)} className="text-brand-gold hover:scale-110 transition-transform">{expandedClient === clientName ? <ChevronUp /> : <ChevronDown />}</button>
+                           <button onClick={() => setExpandedClient(expandedClient === clientName ? null : clientName)} className="text-brand-gold hover:scale-110 transition-transform">
+                             {expandedClient === clientName ? <ChevronUp /> : <ChevronDown />}
+                           </button>
                         </td>
                         <td className="py-4"><div className="text-ink font-black text-sm uppercase">{clientName}</div></td>
                         <td className="text-right py-4 font-black text-ink">{group.debts.length} Facturas</td>
                         <td className="text-right py-4 font-black text-status-info text-base">{Utils.fmtUSD(group.totalUSD)}</td>
                         <td className="text-right py-4 font-black text-ink">{Utils.fmtBS(group.totalUSD * state.tasa)}</td>
-                        <td className="text-center py-4"><button onClick={() => setShowClientHistory(clientName)} className="w-10 h-10 rounded-full flex items-center justify-center bg-white text-status-success border-2 border-status-success/20 hover:bg-status-success hover:text-white transition-all shadow-md"><Eye className="w-5 h-5" /></button></td>
+                        <td className="text-center py-4">
+                          <button onClick={() => setShowClientHistory(clientName)} className="w-10 h-10 rounded-full flex items-center justify-center bg-white text-status-success border-2 border-status-success/20 hover:bg-status-success hover:text-white transition-all shadow-md">
+                            <Eye className="w-5 h-5" />
+                          </button>
+                        </td>
                       </tr>
                       {expandedClient === clientName && (
                         <tr className="bg-surface-soft/40 animate-in slide-in-from-top-1 duration-200">
                            <td colSpan={6} className="px-12 py-4">
                               <div className="card border-line bg-white shadow-inner rounded-xl overflow-hidden">
                                  <table className="w-full">
-                                    <thead className="bg-ink/5"><tr><th className="text-[9px] font-black uppercase p-2 text-left">Emisión</th><th className="text-[9px] font-black uppercase p-2 text-left">Vencimiento</th><th className="text-[9px] font-black uppercase p-2 text-right">Saldo USD</th><th className="text-[9px] font-black uppercase p-2 text-center">Acciones</th></tr></thead>
-                                    <tbody>{group.debts.map(d => (<tr key={d.id} className="border-b border-line/20"><td className="text-[10px] font-black p-2">{Utils.fmtFecha(d.fecha)}</td><td className={`text-[10px] font-black p-2 ${d.fechaVencimiento < Utils.hoy() ? 'text-status-danger' : 'text-ink'}`}>{d.fechaVencimiento === '2099-12-31' ? 'ABIERTA' : Utils.fmtFecha(d.fechaVencimiento)}</td><td className="text-[10px] font-black p-2 text-right text-brand-gold-deep">{Utils.fmtUSD(d.saldoUSD)}</td><td className="p-2 text-center"><div className="flex justify-center gap-2"><button onClick={() => setShowDetails(d)} className="w-8 h-8 rounded-full flex items-center justify-center text-status-success hover:bg-status-success/10"><Eye className="w-4 h-4"/></button><button onClick={() => { setShowAbonoModal(d); }} className="btn btn-sm btn-primary h-7 px-3 text-[8px] uppercase">Abonar</button></div></td></tr>))}</tbody>
+                                    <thead className="bg-ink/5">
+                                      <tr>
+                                        <th className="text-[9px] font-black uppercase p-2 text-left">Emisión</th>
+                                        <th className="text-[9px] font-black uppercase p-2 text-left">Vencimiento</th>
+                                        <th className="text-[9px] font-black uppercase p-2 text-right">Saldo USD</th>
+                                        <th className="text-[9px] font-black uppercase p-2 text-center">Acciones</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {group.debts.map(d => (
+                                        <tr key={d.id} className="border-b border-line/20">
+                                          <td className="text-[10px] font-black p-2">{Utils.fmtFecha(d.fecha)}</td>
+                                          <td className={`text-[10px] font-black p-2 ${d.fechaVencimiento < Utils.hoy() ? 'text-status-danger' : 'text-ink'}`}>
+                                            {d.fechaVencimiento === '2099-12-31' ? 'ABIERTA' : Utils.fmtFecha(d.fechaVencimiento)}
+                                          </td>
+                                          <td className="text-[10px] font-black p-2 text-right text-brand-gold-deep">{Utils.fmtUSD(d.saldoUSD)}</td>
+                                          <td className="p-2 text-center">
+                                            <div className="flex justify-center gap-2">
+                                              <button onClick={() => setShowDetails(d)} className="w-8 h-8 rounded-full flex items-center justify-center text-status-success hover:bg-status-success/10">
+                                                <Eye className="w-4 h-4"/>
+                                              </button>
+                                              <button onClick={() => { setShowAbonoModal(d); }} className="btn btn-sm btn-primary h-7 px-3 text-[8px] uppercase">
+                                                Abonar
+                                              </button>
+                                            </div>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
                                  </table>
                               </div>
                            </td>
@@ -998,7 +1129,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       )}
 
       {priceSelectorItem && (
-        <div className="modal show" style={{ zIndex: 120 }}><div className="modal-bg" onClick={() => setPriceSelectorItem(null)}></div>
+        <div className="modal show" style={{ zIndex: 120 }}>
+          <div className="modal-bg" onClick={() => setPriceSelectorItem(null)}></div>
           <div className="modal-box max-w-sm bg-white border-2 border-line rounded-2xl overflow-hidden shadow-2xl">
             <div className="modal-head py-3 px-5 border-b border-line bg-ink text-white flex justify-between items-center">
               <h3 className="font-black text-xs uppercase tracking-widest flex items-center gap-2">
@@ -1008,7 +1140,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
             </div>
             <div className="modal-body p-6 space-y-4">
                <p className="text-[10px] font-black uppercase text-ink/40 text-center tracking-tighter">{priceSelectorItem.product.nombre}</p>
-               
                <div className="grid grid-cols-1 gap-2">
                   <button onClick={() => handlePriceChange(priceSelectorItem.index, priceSelectorItem.product.precioUSD)} className="flex justify-between items-center p-4 bg-surface-soft border border-line rounded-xl hover:border-brand-gold transition-all group">
                     <span className="text-xs font-black text-ink uppercase">Precio Estándar</span>
@@ -1100,7 +1231,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       )}
 
       {showDetails && (
-        <div className="modal show" style={{ zIndex: 110 }}><div className="modal-bg" onClick={() => setShowDetails(null)}></div>
+        <div className="modal show" style={{ zIndex: 110 }}>
+          <div className="modal-bg" onClick={() => setShowDetails(null)}></div>
           <div className="modal-box max-w-[600px] bg-white border-2 border-line rounded-xl overflow-hidden shadow-2xl">
             <div className="modal-head py-4 px-6 border-b border-line bg-ink flex justify-between items-center text-white">
               <h3 className="font-black text-xs uppercase italic tracking-tighter flex items-center gap-2">
@@ -1185,7 +1317,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       )}
 
       {showClientHistory && (
-        <div className="modal show" style={{ zIndex: 105 }}><div className="modal-bg" onClick={() => setShowClientHistory(null)}></div>
+        <div className="modal show" style={{ zIndex: 105 }}>
+          <div className="modal-bg" onClick={() => setShowClientHistory(null)}></div>
           <div className={`modal-box max-w-4xl bg-white border-2 border-line rounded-xl overflow-hidden shadow-2xl transition-all ${showDetails ? 'blur-sm scale-95 opacity-40 pointer-events-none' : ''}`}>
             <div className="modal-head py-4 px-6 border-b border-line bg-ink flex justify-between items-center text-white">
               <h3 className="font-black uppercase italic tracking-tighter text-xs flex items-center gap-2">
@@ -1221,7 +1354,9 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                             </span>
                           </td>
                           <td className="p-4 text-center">
-                             <button onClick={() => setShowDetails(d)} className="w-10 h-10 rounded-full flex items-center justify-center bg-white text-status-success border-2 border-status-success/20 hover:bg-status-success hover:text-white transition-all shadow-md"><Eye className="w-5 h-5"/></button>
+                             <button onClick={() => setShowDetails(d)} className="w-10 h-10 rounded-full flex items-center justify-center bg-white text-status-success border-2 border-status-success/20 hover:bg-status-success hover:text-white transition-all shadow-md">
+                               <Eye className="w-5 h-5"/>
+                             </button>
                           </td>
                         </tr>
                       ))}
@@ -1230,7 +1365,9 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                </div>
             </div>
             <div className="modal-foot p-4 bg-surface-soft border-t border-line text-right">
-               <button onClick={() => setShowClientHistory(null)} className="btn btn-primary px-8 font-black uppercase text-[10px] rounded-lg shadow-md">Cerrar Historial</button>
+               <button onClick={() => setShowClientHistory(null)} className="btn btn-primary px-8 font-black uppercase text-[10px] rounded-lg shadow-md">
+                 Cerrar Historial
+               </button>
             </div>
           </div>
         </div>
