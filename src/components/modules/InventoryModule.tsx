@@ -48,6 +48,26 @@ import {
 } from '@/lib/pdf-generator';
 import { ProductFormModal } from '@/components/inventory/ProductFormModal';
 
+// ============================================================
+// HELPERS DE FORMATO PARA ML
+// ============================================================
+const formatPrice = (value: number, unit?: string) => {
+  const isMl = unit && (unit.trim().toLowerCase() === 'ml' || unit.trim().toLowerCase() === 'mililitro' || unit.trim().toLowerCase() === 'mililitros');
+  const decimals = isMl ? 3 : 2;
+  return '$' + Number(value).toLocaleString('en-US', { 
+    minimumFractionDigits: decimals, 
+    maximumFractionDigits: decimals 
+  });
+};
+
+const formatStock = (stock: number, unit?: string) => {
+  const normalizedUnit = unit ? unit.trim().toLowerCase() : '';
+  if (normalizedUnit === 'ml' || normalizedUnit === 'mililitro' || normalizedUnit === 'mililitros') {
+    return stock.toFixed(2);
+  }
+  return stock.toString();
+};
+
 export function InventoryModule({ state, updateState }: { state: AppState, updateState: (s: Partial<AppState>) => void }) {
   const [activeTab, setActiveTab] = useState('productos');
   const [search, setSearch] = useState('');
@@ -180,8 +200,8 @@ export function InventoryModule({ state, updateState }: { state: AppState, updat
                   {prods.length === 0 ? (
                     <TableRow><TableCell colSpan={7} className="text-center py-20 text-ink/20 font-black italic uppercase">No se encontraron productos coincidentes</TableCell></TableRow>
                   ) : (
-                    prods.map(p => (
-                      <TableRow key={p.id} className="border-b border-line/30 hover:bg-surface-warm/20 transition-colors">
+                    prods.map((p, index) => (
+                      <TableRow key={`${p.id}-${index}`} className="border-b border-line/30 hover:bg-surface-warm/20 transition-colors">
                         <TableCell className="mono text-xs font-black text-ink">{p.codigo}</TableCell>
                         <TableCell className="font-bold text-ink uppercase">
                           <div className="flex items-center gap-2">
@@ -190,11 +210,15 @@ export function InventoryModule({ state, updateState }: { state: AppState, updat
                           </div>
                         </TableCell>
                         <TableCell><span className="badge badge-neutral text-ink font-black uppercase text-[9px]">{p.categoria}</span></TableCell>
-                        <TableCell className="mono font-bold text-ink/50 text-right">{Utils.fmtUSD(p.costoUSD)}</TableCell>
-                        <TableCell className="mono text-brand-gold-deep font-black text-right">{Utils.fmtUSD(p.precioUSD)}</TableCell>
+                        <TableCell className="mono font-bold text-ink/50 text-right">
+                          {formatPrice(p.costoUSD, p.cantidad)}
+                        </TableCell>
+                        <TableCell className="mono text-brand-gold-deep font-black text-right">
+                          {formatPrice(p.precioUSD, p.cantidad)}
+                        </TableCell>
                         <TableCell className="text-center">
                           <span className={`badge ${p.stock <= (p.stockMinimo || 0) ? 'badge-err' : 'badge-neutral'} font-black text-xs min-w-[40px]`}>
-                            {p.stock}
+                            {formatStock(p.stock, p.cantidad)}
                           </span>
                         </TableCell>
                         <TableCell>
@@ -434,13 +458,21 @@ function ReporteGeneral({ state, onAction }: { state: AppState, onAction: (type:
               {filteredProducts.length === 0 ? (
                 <TableRow><TableCell colSpan={7} className="text-center py-20 text-ink/20 font-black italic uppercase">No se encontraron productos para el departamento seleccionado</TableCell></TableRow>
               ) : (
-                filteredProducts.map(p => (
-                  <TableRow key={p.id} className="border-b border-line/30">
+                filteredProducts.map((p, index) => (
+                  <TableRow key={`${p.id}-${index}`} className="border-b border-line/30">
                     <TableCell className="mono text-[11px] font-black text-ink">{p.codigo}</TableCell>
                     <TableCell className="font-black uppercase text-xs text-ink">{p.nombre}</TableCell>
-                    <TableCell className="mono text-right text-xs font-bold text-ink/60">{Utils.fmtUSD(p.costoUSD)}</TableCell>
-                    <TableCell className="mono text-right text-brand-gold-deep font-black">{Utils.fmtUSD(p.precioUSD)}</TableCell>
-                    <TableCell className="text-center py-3 px-4"><span className="badge badge-neutral font-black">{p.stock}</span></TableCell>
+                    <TableCell className="mono text-right text-xs font-bold text-ink/60">
+                      {formatPrice(p.costoUSD, p.cantidad)}
+                    </TableCell>
+                    <TableCell className="mono text-right text-brand-gold-deep font-black">
+                      {formatPrice(p.precioUSD, p.cantidad)}
+                    </TableCell>
+                    <TableCell className="text-center py-3 px-4">
+                      <span className="badge badge-neutral font-black">
+                        {formatStock(p.stock, p.cantidad)}
+                      </span>
+                    </TableCell>
                     <TableCell className="mono text-right font-black text-ink">{Utils.fmtUSD(Utils.round(p.costoUSD * p.stock))}</TableCell>
                     <TableCell>
                       <div className="flex justify-center gap-1">

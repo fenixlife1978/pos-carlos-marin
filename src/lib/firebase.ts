@@ -3,7 +3,7 @@ import { getAuth, Auth } from "firebase/auth";
 import { 
   initializeFirestore, 
   persistentLocalCache, 
-  persistentSingleTabManager, 
+  persistentMultipleTabManager,  // ← CAMBIADO: en lugar de persistentSingleTabManager
   getFirestore, 
   Firestore 
 } from "firebase/firestore";
@@ -57,7 +57,7 @@ try {
 }
 
 // ============================================================
-// EXPORTAR SERVICIOS (SINGLE TAB PERSISTENCE)
+// EXPORTAR SERVICIOS (MULTI‑TAB PERSISTENCE)
 // ============================================================
 
 export const auth: Auth = getAuth(app);
@@ -66,14 +66,14 @@ let dbInstance: Firestore;
 
 if (typeof window !== "undefined" && isConfigValid) {
   try {
-    // ✅ CORRECCIÓN: Pasar undefined explícitamente a persistentSingleTabManager
+    // ✅ CORRECCIÓN: Usar persistentMultipleTabManager para soportar múltiples pestañas
     dbInstance = initializeFirestore(app, {
       localCache: persistentLocalCache({
-        tabManager: persistentSingleTabManager(undefined)
+        tabManager: persistentMultipleTabManager()  // ← CAMBIO CLAVE
       })
     });
   } catch (e) {
-    // Si ya está inicializado (por ejemplo en un Hot Reload), obtenemos la instancia actual
+    // Si ya está inicializado (ej. Hot Reload), obtenemos la instancia actual
     dbInstance = getFirestore(app);
   }
 } else {
@@ -82,7 +82,7 @@ if (typeof window !== "undefined" && isConfigValid) {
 
 export const db: Firestore = dbInstance;
 
-// ✅ CORRECCIÓN: Inicialización segura de RTDB
+// ✅ Inicialización segura de RTDB
 let rtdbInstance: Database;
 try {
   rtdbInstance = getDatabase(app);

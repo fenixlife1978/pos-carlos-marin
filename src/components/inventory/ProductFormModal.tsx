@@ -28,7 +28,7 @@ export function ProductFormModal({ producto, state, onClose, onSave, onUpdateLis
     costoUSD: producto?.costoUSD?.toString() ?? '0',
     margen: producto?.margen?.toString() ?? '0',
     precioUSD: producto?.precioUSD?.toString() ?? '0',
-    precioBS: producto ? (producto.precioUSD * state.tasa).toFixed(2) : '0',
+    precioBS: producto ? (producto.precioUSD * state.tasa).toFixed(3) : '0',
     precioMayorUSD: producto?.precioMayorUSD?.toString() ?? '0',
     precioOfertaUSD: producto?.precioOfertaUSD?.toString() ?? '0',
     precioPromoUSD: producto?.precioPromoUSD?.toString() ?? '0',
@@ -88,9 +88,9 @@ export function ProductFormModal({ producto, state, onClose, onSave, onUpdateLis
     setDatos({
       ...datos,
       [field]: value,
-      margen: field === 'margen' ? value : newMargen.toFixed(2),
-      precioUSD: field === 'precioUSD' ? value : newUSD.toFixed(2),
-      precioBS: field === 'precioBS' ? value : newBS.toFixed(2)
+      margen: field === 'margen' ? value : newMargen.toFixed(3),
+      precioUSD: field === 'precioUSD' ? value : newUSD.toFixed(3),
+      precioBS: field === 'precioBS' ? value : newBS.toFixed(3)
     });
   };
 
@@ -233,15 +233,15 @@ export function ProductFormModal({ producto, state, onClose, onSave, onUpdateLis
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                  <div className="space-y-1">
                    <Label className="text-[10px] font-black uppercase text-ink/40">Precio al Mayor ($)</Label>
-                   <Input className="h-11 font-black bg-white" value={datos.precioMayorUSD} onChange={e => validarDecimal(e.target.value) && setDatos({...datos, precioMayorUSD: e.target.value})} placeholder="0.00" />
+                   <Input className="h-11 font-black bg-white" value={datos.precioMayorUSD} onChange={e => validarDecimal(e.target.value) && setDatos({...datos, precioMayorUSD: e.target.value})} placeholder="0.000" />
                  </div>
                  <div className="space-y-1">
                    <Label className="text-[10px] font-black uppercase text-ink/40">Precio Promoción ($)</Label>
-                   <Input className="h-11 font-black bg-white" value={datos.precioPromoUSD} onChange={e => validarDecimal(e.target.value) && setDatos({...datos, precioPromoUSD: e.target.value})} placeholder="0.00" />
+                   <Input className="h-11 font-black bg-white" value={datos.precioPromoUSD} onChange={e => validarDecimal(e.target.value) && setDatos({...datos, precioPromoUSD: e.target.value})} placeholder="0.000" />
                  </div>
                  <div className="space-y-1">
                    <Label className="text-[10px] font-black uppercase text-ink/40">Precio Descuento ($)</Label>
-                   <Input className="h-11 font-black bg-white" value={datos.precioOfertaUSD} onChange={e => validarDecimal(e.target.value) && setDatos({...datos, precioOfertaUSD: e.target.value})} placeholder="0.00" />
+                   <Input className="h-11 font-black bg-white" value={datos.precioOfertaUSD} onChange={e => validarDecimal(e.target.value) && setDatos({...datos, precioOfertaUSD: e.target.value})} placeholder="0.000" />
                  </div>
               </div>
             </div>

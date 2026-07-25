@@ -18,7 +18,17 @@ import {
   Database
 } from 'lucide-react';
 import { db } from '@/lib/firebase';
-import { collection, doc, updateDoc, onSnapshot, getDocs, setDoc, deleteDoc } from 'firebase/firestore';
+import { 
+  collection, 
+  doc, 
+  updateDoc, 
+  onSnapshot, 
+  getDocs, 
+  setDoc, 
+  deleteDoc,
+  query,
+  where
+} from 'firebase/firestore';
 import { toast } from '@/hooks/use-toast';
 
 export default function GlobalControlModule({ state, updateState }: { state: AppState, updateState: (s: Partial<AppState>) => void }) {
@@ -28,6 +38,25 @@ export default function GlobalControlModule({ state, updateState }: { state: App
   const [newTerminalName, setNewTerminalName] = useState('');
   const [showAddTerminal, setShowAddTerminal] = useState(false);
 
+  // Cargar terminales desde Firestore al montar y mantener sincronía en tiempo real
+  useEffect(() => {
+    if (!db) return;
+
+    const unsubscribe = onSnapshot(collection(db, 'terminales'), (snapshot) => {
+      const terminales: Terminal[] = [];
+      snapshot.forEach(doc => {
+        terminales.push({ id: doc.id, ...doc.data() } as Terminal);
+      });
+      // Actualizar el estado local con los terminales de Firestore
+      updateState({ terminales });
+    }, (error) => {
+      console.error("Error cargando terminales:", error);
+    });
+
+    return () => unsubscribe();
+  }, [updateState]);
+
+  // Cargar usuarios
   useEffect(() => {
     if (!db) return;
     
@@ -52,7 +81,6 @@ export default function GlobalControlModule({ state, updateState }: { state: App
       const newStatus = !currentStatus;
       const userRef = doc(db, 'users', userId);
       
-      // Actualización directa y forzada en Firestore
       await updateDoc(userRef, { 
         accesoBloqueado: newStatus 
       });
@@ -105,7 +133,7 @@ export default function GlobalControlModule({ state, updateState }: { state: App
     }
   };
 
-  const createTerminal = () => {
+  const createTerminal = async () => {
     if (!newTerminalName.trim()) return;
     const newTerm: Terminal = {
       id: 'TRM-' + Store.uid().toUpperCase().slice(0, 4),
@@ -114,23 +142,43 @@ export default function GlobalControlModule({ state, updateState }: { state: App
       activo: true,
       proximoRecibo: 1
     };
-    updateState({ terminales: [...(state.terminales || []), newTerm] });
+
+    try {
+      // Guardar en Firestore en la colección raíz "terminales"
+      await setDoc(doc(db, 'terminales', newTerm.id), newTerm);
+      // Actualizar estado local (opcional, porque onSnapshot actualizará automáticamente)
+      // updateState({ terminales: [...(state.terminales || []), newTerm] });
+      toast({ title: "Terminal Creado", description: `ID: ${newTerm.id}` });
+    } catch (error) {
+      console.error("Error creando terminal:", error);
+      toast({ variant: "destructive", title: "Error", description: "No se pudo guardar el terminal en la nube." });
+    }
+
     setNewTerminalName('');
     setShowAddTerminal(false);
-    toast({ title: "Terminal Creado" });
   };
 
-  const deleteTerminal = (id: string) => {
+  const deleteTerminal = async (id: string) => {
     if (!confirm('¿Eliminar este terminal?')) return;
-    updateState({ terminales: state.terminales.filter(t => t.id !== id) });
+    try {
+      await deleteDoc(doc(db, 'terminales', id));
+      // El estado se actualizará automáticamente por onSnapshot
+      toast({ title: "Terminal Eliminado" });
+    } catch (error) {
+      console.error("Error eliminando terminal:", error);
+      toast({ variant: "destructive", title: "Error", description: "No se pudo eliminar el terminal." });
+    }
   };
 
-  const assignUserToTerminal = (terminalId: string, userId: string | null) => {
-    const updated = state.terminales.map(t => 
-      t.id === terminalId ? { ...t, usuarioId: userId === 'none' ? null : userId } : t
-    );
-    updateState({ terminales: updated });
-    toast({ title: "Asignación Actualizada" });
+  const assignUserToTerminal = async (terminalId: string, userId: string | null) => {
+    try {
+      const terminalRef = doc(db, 'terminales', terminalId);
+      await updateDoc(terminalRef, { usuarioId: userId === 'none' ? null : userId });
+      toast({ title: "Asignación Actualizada" });
+    } catch (error) {
+      console.error("Error asignando usuario:", error);
+      toast({ variant: "destructive", title: "Error", description: "No se pudo asignar el usuario." });
+    }
   };
 
   return (

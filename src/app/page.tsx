@@ -33,7 +33,7 @@ import { Store, initialState, Utils } from '@/lib/db-store';
 import { AppState, Terminal, Debt } from '@/lib/types';
 import { auth, db } from '@/lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, onSnapshot, getDoc } from 'firebase/firestore';
+import { doc, onSnapshot, getDoc, collection, getDocs, query, where } from 'firebase/firestore';
 import DashboardModule from '@/components/modules/DashboardModule';
 import { InventoryModule } from '@/components/modules/InventoryModule';
 import SalesModule from '@/components/modules/SalesModule';
@@ -68,6 +68,22 @@ export default function LicoreriaPOS() {
   
   const moduleInitialized = useRef(false);
 
+  // Función para cargar terminales desde Firestore y actualizar estado local
+  const loadTerminalsFromFirestore = async () => {
+    if (!db) return [];
+    try {
+      const snapshot = await getDocs(collection(db, 'terminales'));
+      const terminales: Terminal[] = [];
+      snapshot.forEach(doc => {
+        terminales.push({ id: doc.id, ...doc.data() } as Terminal);
+      });
+      return terminales;
+    } catch (error) {
+      console.error("Error cargando terminales:", error);
+      return [];
+    }
+  };
+
   useEffect(() => {
     setMounted(true);
     let unsubscribeProfile: any = null;
@@ -89,62 +105,71 @@ export default function LicoreriaPOS() {
         router.push('/login');
       } else {
         try {
-          unsubscribeProfile = onSnapshot(doc(db, 'users', currentUser.uid), (docSnap) => {
-            if (!auth.currentUser) return;
-
-            if (docSnap.exists()) {
-              const data = docSnap.data();
-              
-              if (data.accesoBloqueado) {
-                signOut(auth).then(() => {
-                  if (typeof sessionStorage !== 'undefined') sessionStorage.clear();
-                  router.push('/login');
-                });
-                return;
-              }
-
-              if (!moduleInitialized.current) {
-                const savedModule = sessionStorage.getItem('posven_active_module');
-                const aperturaConfirmada = localStorage.getItem('posven_apertura_done') === 'true';
-
-                if (data.rol === 'cajero') {
-                   getDoc(doc(db, 'pos_system_data', 'state')).then(configSnap => {
-                      const terminals = (configSnap.data()?.terminales || []) as Terminal[];
-                      const hasTerminal = terminals.some((t: Terminal) => t.usuarioId === currentUser.uid);
-                      
-                      if (!hasTerminal) {
-                         signOut(auth).then(() => {
-                           alert("ACCESO RESTRINGIDO: Su usuario no tiene un terminal asignado.");
-                           router.push('/login');
-                         });
-                         return;
-                      }
-                      
-                      const target = savedModule || 'ventas';
-                      setActiveTab(target);
-                      setShowApertura(!aperturaConfirmada);
-                      setLoading(false);
-                   }).catch(() => setLoading(false));
-                } else {
-                   const target = savedModule || 'dashboard';
-                   setActiveTab(target);
-                   setShowApertura(false);
-                   setLoading(false);
-                }
-                moduleInitialized.current = true;
-              }
-
-              setUserRole(data.rol);
-              setUserProfile(data);
-              setUser(currentUser);
-            } else {
-              signOut(auth).then(() => router.push('/login'));
-            }
-          }, (err) => {
-            console.error("Sync error:", err);
-            setLoading(false);
+          // Cargar terminales desde Firestore (colección raíz)
+          const terminales = await loadTerminalsFromFirestore();
+          
+          // Suscribirse a cambios en tiempo real de los terminales
+          const unsubscribeTerminals = onSnapshot(collection(db, 'terminales'), (snapshot) => {
+            const updatedTerminals: Terminal[] = [];
+            snapshot.forEach(doc => {
+              updatedTerminals.push({ id: doc.id, ...doc.data() } as Terminal);
+            });
+            setState(prev => ({ ...prev, terminales: updatedTerminals }) as AppState);
           });
 
+          // Obtener perfil del usuario
+          const userDocRef = doc(db, 'users', currentUser.uid);
+          const userDocSnap = await getDoc(userDocRef);
+          
+          if (!userDocSnap.exists()) {
+            await signOut(auth);
+            router.push('/login');
+            return;
+          }
+
+          const data = userDocSnap.data();
+          
+          if (data.accesoBloqueado) {
+            await signOut(auth);
+            if (typeof sessionStorage !== 'undefined') sessionStorage.clear();
+            router.push('/login');
+            return;
+          }
+
+          if (!moduleInitialized.current) {
+            const savedModule = sessionStorage.getItem('posven_active_module');
+            const aperturaConfirmada = localStorage.getItem('posven_apertura_done') === 'true';
+
+            if (data.rol === 'cajero') {
+              // Verificar si el usuario tiene un terminal asignado en la colección raíz
+              const hasTerminal = terminales.some((t: Terminal) => t.usuarioId === currentUser.uid);
+              
+              if (!hasTerminal) {
+                await signOut(auth);
+                alert("ACCESO RESTRINGIDO: Su usuario no tiene un terminal asignado.");
+                router.push('/login');
+                return;
+              }
+              
+              const target = savedModule || 'ventas';
+              setActiveTab(target);
+              setShowApertura(!aperturaConfirmada);
+              setLoading(false);
+            } else {
+              const target = savedModule || 'dashboard';
+              setActiveTab(target);
+              setShowApertura(false);
+              setLoading(false);
+            }
+            moduleInitialized.current = true;
+          }
+
+          setUserRole(data.rol);
+          setUserProfile(data);
+          setUser(currentUser);
+          // Guardar terminales en el estado local (ya se actualizarán con el onSnapshot)
+          setState(prev => ({ ...prev, terminales: terminales }) as AppState);
+          
         } catch (error) {
           console.error("Auth process error:", error);
           setLoading(false);
@@ -191,7 +216,7 @@ export default function LicoreriaPOS() {
     const checkDueDebts = () => {
       const now = new Date();
       const limitDate = new Date();
-      limitDate.setHours(limitDate.getHours() + 72); // 72 horas desde ahora
+      limitDate.setHours(limitDate.getHours() + 72);
 
       const pending = state.cxp.filter(d => {
         if (d.estado === 'pagada') return false;
@@ -212,7 +237,7 @@ export default function LicoreriaPOS() {
     };
 
     checkDueDebts();
-    const interval = setInterval(checkDueDebts, 60000); // Revisar cada minuto internamente
+    const interval = setInterval(checkDueDebts, 60000);
     return () => clearInterval(interval);
   }, [state.cxp, userRole]);
 
@@ -406,8 +431,6 @@ export default function LicoreriaPOS() {
                   const bsValue = parseFloat(aperturaData.bs) || 0;
                   const usdValue = parseFloat(aperturaData.usd) || 0;
                   
-                  // ✅ GUARDAR CORRECTAMENTE EN EL ESTADO GLOBAL
-                  // Actualizar el estado local y persistir en Store
                   const currentState = Store.get();
                   const newState: AppState = {
                     ...currentState,
@@ -581,7 +604,6 @@ export default function LicoreriaPOS() {
         <div className="fixed inset-0 bg-black/60 z-[45] backdrop-blur-sm" onClick={() => setIsSidebarOpen(false)} />
       )}
 
-      {/* CARTEL DE NOTIFICACIÓN CXP (CENTRAL) */}
       {showCxPAlert && (
         <div className="modal show" style={{ zIndex: 9999 }}>
           <div className="modal-bg" />

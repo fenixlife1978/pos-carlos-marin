@@ -124,6 +124,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   const [cliente, setCliente] = useState('Consumidor final');
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const processingRef = useRef(false);
   
   const [pagos, setPagos] = useState<PagoRealizado[]>([]);
   const [showMultiModal, setShowMultiModal] = useState(false);
@@ -136,6 +137,10 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   const [selectedProductDisplay, setSelectedProductDisplay] = useState<Product | null>(null);
   
   const [priceSelectorItem, setPriceSelectorItem] = useState<{ index: number, product: Product } | null>(null);
+
+  // ===== ESTADO PARA VENTA POR MONTO =====
+  const [montoVentaBS, setMontoVentaBS] = useState<string>('');
+  const [cantidadCalculada, setCantidadCalculada] = useState<number | null>(null);
 
   // ===== ESTADOS PARA CREDIT MODAL =====
   const [isCreditModalOpen, setIsCreditModalOpen] = useState(false);
@@ -152,6 +157,18 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
 
   const [expandedClient, setExpandedClient] = useState<string | null>(null);
   const [showClientHistory, setShowClientHistory] = useState<string | null>(null);
+
+  // ===== NUEVOS ESTADOS PARA FILTROS DE HISTORIAL =====
+  const [historyDateFilter, setHistoryDateFilter] = useState<'today' | 'yesterday' | 'month' | 'custom'>('today');
+  const [historyDateFrom, setHistoryDateFrom] = useState(Utils.hoy());
+  const [historyDateTo, setHistoryDateTo] = useState(Utils.hoy());
+
+  // ===== PAGINACIÓN DEL HISTORIAL =====
+  const [historyPage, setHistoryPage] = useState(1);
+  const pageSize = 10;
+
+  // ===== NAVEGACIÓN DEL BUSCADOR =====
+  const [selectedSearchIndex, setSelectedSearchIndex] = useState<number>(-1);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -181,29 +198,31 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     return auth?.currentUser ? state.terminales.find(t => t.usuarioId === auth.currentUser!.uid) : null;
   }, [state.terminales]);
 
-  // ===== CORRECCIÓN: getFreshReportData - DEVOLUCIONES Y ANULACIONES DIRECTAS POR TERMINAL =====
+  // Resetea la página al cambiar filtros de fecha
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [historyDateFilter, historyDateFrom, historyDateTo]);
+
+  // Resetea el índice de búsqueda cuando cambia el texto o se cierra el dropdown
+  useEffect(() => {
+    setSelectedSearchIndex(-1);
+  }, [search]);
+
+  // ============================================================
+  // CORRECCIÓN: getFreshReportData
+  // ============================================================
   const getFreshReportData = () => {
     const corteTimestamp = state.fechaUltimoZ || '';
     const termId = currentTerminal?.id || 'GLOBAL';
     
-    // Ventas activas (no anuladas) de este terminal
     const vActivas = (state.ventas || []).filter(v => v.fecha > corteTimestamp && v.estado !== 'anulada' && v.terminalId === termId);
-    
-    // ===== DEVOLUCIONES DIRECTAS =====
-    const dHoy = (state.devoluciones || [])
-      .filter(d => d.fecha > corteTimestamp && d.terminalId === termId);
+    const dHoy = (state.devoluciones || []).filter(d => d.fecha > corteTimestamp && d.terminalId === termId);
     const devUSD = dHoy.reduce((s, d) => s + d.totalUSD, 0);
 
-    // ===== ANULACIONES DIRECTAS =====
     const anulacionesHoy = (state.anulaciones || [])
       .filter(a => a.fecha > corteTimestamp && a.terminalId === termId);
     const cantidadAnuladas = anulacionesHoy.length;
 
-    // (Opcional) Ventas anuladas para control de documentos (ya no se usan en estadísticas)
-    const vAnuladas = (state.ventas || [])
-      .filter(v => v.fecha > corteTimestamp && v.estado === 'anulada' && v.terminalId === termId);
-
-    // ===== FILTRAR VENTAS DE EFECTIVO =====
     const ventasEfectivo = vActivas.filter(v => 
       v.type === 'VENTA EFECTIVO BS' || 
       (v.items && v.items.some(item => item.productoId === 'SERVICIO_EFECTIVO'))
@@ -254,16 +273,20 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     const desdeNC = sortedDevs.length > 0 ? sortedDevs[0].id : 'N/A';
     const hastaNC = sortedDevs.length > 0 ? sortedDevs[sortedDevs.length - 1].id : 'N/A';
 
+    // 🔑 FILTRAR EGESOS EXCLUYENDO 'VENTA_EFECTIVO' PARA QUE NO APAREZCAN EN SALIDAS DE DEVOLUCIONES/ANULACIONES
     const relevantDiario = (state.libroDiario || []).filter(e => e.fecha > corteTimestamp && e.referencia.includes(termId));
-    const totalSalidasCaja = relevantDiario.filter(e => e.tipo === 'egreso').reduce((s, e) => s + e.montoUSD, 0);
-    const totalEntradasCaja = relevantDiario.filter(e => e.tipo === 'ingreso' && e.categoria !== 'VENTA' && e.categoria !== 'COBRO_DEUDA' && e.categoria !== 'COMISION_EFECTIVO').reduce((s, e) => s + e.montoUSD, 0);
+    const totalSalidasCaja = relevantDiario
+      .filter(e => e.tipo === 'egreso' && e.categoria !== 'VENTA_EFECTIVO')
+      .reduce((s, e) => s + e.montoUSD, 0);
+    const totalEntradasCaja = relevantDiario
+      .filter(e => e.tipo === 'ingreso' && e.categoria !== 'VENTA' && e.categoria !== 'COBRO_DEUDA' && e.categoria !== 'COMISION_EFECTIVO')
+      .reduce((s, e) => s + e.montoUSD, 0);
 
-    // ===== SEPARAR SALIDAS Y ENTRADAS POR MONEDA =====
     const salidasCajaUSD = relevantDiario
-      .filter(e => e.tipo === 'egreso' && e.metodo === 'efectivo_usd')
+      .filter(e => e.tipo === 'egreso' && e.metodo === 'efectivo_usd' && e.categoria !== 'VENTA_EFECTIVO')
       .reduce((s, e) => s + e.montoUSD, 0);
     const salidasCajaBS = relevantDiario
-      .filter(e => e.tipo === 'egreso' && e.metodo === 'efectivo_bs')
+      .filter(e => e.tipo === 'egreso' && e.metodo === 'efectivo_bs' && e.categoria !== 'VENTA_EFECTIVO')
       .reduce((s, e) => s + e.montoBS, 0);
 
     const entradasCajaUSD = relevantDiario
@@ -395,8 +418,94 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     updateState({ carrito: nuevoCarrito });
     setSearch('');
     setPagos([]);
+    setMontoVentaBS('');
+    setCantidadCalculada(null);
+    setSelectedSearchIndex(-1);
     searchInputRef.current?.focus();
   };
+
+  // ============================================================
+  // NUEVO: EFECTO PARA ACTUALIZAR EL CARRITO EN TIEMPO REAL AL CAMBIAR EL MONTO EN BS
+  // ============================================================
+  useEffect(() => {
+    // Solo si hay un producto seleccionado y un monto válido
+    if (!selectedProductDisplay) {
+      return;
+    }
+
+    const monto = parseFloat(montoVentaBS.replace(/\./g, ''));
+    if (isNaN(monto) || monto <= 0) {
+      // Si el monto es 0 o vacío, no actualizamos el carrito (dejamos que el usuario decida)
+      return;
+    }
+
+    // Calcular cantidad en unidades del producto
+    const montoUSD = monto / state.tasa;
+    const cantidad = montoUSD / selectedProductDisplay.precioUSD;
+
+    if (cantidad <= 0) return;
+
+    // Redondear a 2 decimales
+    const cantidadRedondeada = Math.round(cantidad * 100) / 100;
+
+    // Verificar stock
+    const stockAvail = getStockDisponible(selectedProductDisplay);
+    if (cantidadRedondeada > stockAvail) {
+      toast({ variant: "destructive", title: "Stock insuficiente", description: `Stock disponible: ${stockAvail} ${selectedProductDisplay.cantidad || 'und'}` });
+      return;
+    }
+
+    // Actualizar el carrito: reemplazar o agregar el ítem
+    const nuevoCarrito = [...state.carrito];
+    const idx = nuevoCarrito.findIndex(i => i.productoId === selectedProductDisplay.id);
+    if (idx >= 0) {
+      // Actualizar cantidad y subtotal
+      nuevoCarrito[idx].cantidad = cantidadRedondeada;
+      nuevoCarrito[idx].subtotalUSD = cantidadRedondeada * nuevoCarrito[idx].precioUnitUSD;
+    } else {
+      // Agregar nuevo ítem
+      nuevoCarrito.push({
+        productoId: selectedProductDisplay.id,
+        nombre: selectedProductDisplay.nombre,
+        precioUnitUSD: selectedProductDisplay.precioUSD,
+        cantidad: cantidadRedondeada,
+        subtotalUSD: cantidadRedondeada * selectedProductDisplay.precioUSD
+      });
+    }
+
+    // Actualizar estado del carrito (solo si hay cambios reales)
+    const currentCarrito = state.carrito;
+    const same = currentCarrito.length === nuevoCarrito.length && 
+                  currentCarrito.every((item, i) => 
+                    item.productoId === nuevoCarrito[i].productoId && 
+                    Math.abs(item.cantidad - nuevoCarrito[i].cantidad) < 0.0001
+                  );
+    if (!same) {
+      updateState({ carrito: nuevoCarrito });
+    }
+
+  }, [montoVentaBS, selectedProductDisplay, state.tasa, state.carrito, updateState, getStockDisponible]);
+
+  // ============================================================
+  // FIN NUEVO EFECTO
+  // ============================================================
+
+  // ===== ACTUALIZAR CANTIDAD CALCULADA EN TIEMPO REAL (para mostrar) =====
+  useEffect(() => {
+    if (selectedProductDisplay && montoVentaBS) {
+      const monto = parseFloat(montoVentaBS.replace(/\./g, ''));
+      if (!isNaN(monto) && monto > 0) {
+        const montoUSD = monto / state.tasa;
+        const cantidad = montoUSD / selectedProductDisplay.precioUSD;
+        const cantidadRedondeada = Math.round(cantidad * 100) / 100;
+        setCantidadCalculada(cantidadRedondeada);
+      } else {
+        setCantidadCalculada(null);
+      }
+    } else {
+      setCantidadCalculada(null);
+    }
+  }, [montoVentaBS, selectedProductDisplay, state.tasa]);
 
   const updateQty = (idx: number, delta: number) => {
     const nuevo = [...state.carrito];
@@ -449,9 +558,13 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   const totalPagadoUSD = pagos.reduce((s, p) => s + p.montoUSD, 0);
   const saldoRestanteUSD = Math.max(0, subtotalUSD - totalPagadoUSD);
 
-  const matches = search.trim().length > 0 
-    ? state.productos.filter(p => p.activo && (p.nombre.toLowerCase().includes(search.toLowerCase()) || p.codigo.toLowerCase().includes(search.toLowerCase()))).slice(0, 8)
-    : [];
+  // Resultados de búsqueda
+  const matches = useMemo(() => {
+    if (search.trim().length === 0) return [];
+    return state.productos
+      .filter(p => p.activo && (p.nombre.toLowerCase().includes(search.toLowerCase()) || p.codigo.toLowerCase().includes(search.toLowerCase())))
+      .slice(0, 8);
+  }, [search, state.productos]);
 
   const filteredClients = useMemo(() => {
     if (clientSearch.trim().length === 0) return [];
@@ -476,13 +589,21 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     setEditandoTasa(false);
   };
 
+  // ============================================================
+  // FUNCIONES DE VENTA CORREGIDAS (con locks y correlatividad)
+  // ============================================================
   const ejecutarVenta = async (pagosFinales?: PagoRealizado[]) => {
-    if (state.carrito.length === 0 || isProcessing) return;
+    if (processingRef.current) return;
+    if (state.carrito.length === 0) return;
+
+    processingRef.current = true;
     setIsProcessing(true);
+
     try {
       const listadoPagos = pagosFinales || pagos;
       const totalPagadoRecibido = listadoPagos.reduce((s, p) => s + p.montoUSD, 0);
       const terminal = getCurrentTerminal();
+      
       const nextNum = terminal?.proximoRecibo || state.proximoRecibo;
       const reciboId = String(nextNum).padStart(9, '0');
       const ahoraStr = Utils.ahora();
@@ -559,8 +680,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         movimientos: [...state.movimientos, ...nuevosMovimientos], 
         libroDiario: [...nuevasEntradasDiario, ...(state.libroDiario || [])], 
         carrito: [], 
-        proximoRecibo: state.proximoRecibo + 1, 
-        terminales: state.terminales.map(t => t.id === terminal?.id ? { ...t, proximoRecibo: t.proximoRecibo + 1 } : t) 
+        proximoRecibo: nextNum + 1,
+        terminales: state.terminales.map(t => t.id === terminal?.id ? { ...t, proximoRecibo: nextNum + 1 } : t) 
       });
       
       setLastProcessedSale(nuevaVenta); 
@@ -569,17 +690,24 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       setCliente('Consumidor final'); 
       setSelectedProductDisplay(null);
     } finally {
+      processingRef.current = false;
       setIsProcessing(false);
     }
   };
 
   const ejecutarAbono = async (pagosAbono: PagoRealizado[]) => {
-    if (!showAbonoModal || isProcessing) return;
+    if (!showAbonoModal) return;
+    if (processingRef.current) return;
+    processingRef.current = true;
     setIsProcessing(true);
+
     try {
       const totalAbonado = pagosAbono.reduce((s, p) => s + p.montoUSD, 0);
       if (totalAbonado <= 0) return;
-      const ahoraStr = Utils.ahora(), terminal = getCurrentTerminal(), nextNum = terminal?.proximoRecibo || state.proximoRecibo, reciboId = 'PAY-' + String(nextNum).padStart(6, '0');
+      const ahoraStr = Utils.ahora(), terminal = getCurrentTerminal();
+      const nextNum = terminal?.proximoRecibo || state.proximoRecibo;
+      const reciboId = 'PAY-' + String(nextNum).padStart(6, '0');
+      
       const nuevasDeudas: Debt[] = state.cxc.map(d => {
         if (d.id === showAbonoModal.id) {
           const nuevoSaldo = Math.max(0, d.saldoUSD - totalAbonado);
@@ -627,24 +755,28 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       await updateState({ 
         cxc: nuevasDeudas, 
         libroDiario: [...nuevosAsientos, ...(state.libroDiario || [])], 
-        proximoRecibo: state.proximoRecibo + 1, 
+        proximoRecibo: nextNum + 1, 
         ventas: [...state.ventas, saleAbono], 
-        terminales: state.terminales.map(t => t.id === terminal?.id ? { ...t, proximoRecibo: t.proximoRecibo + 1 } : t) 
+        terminales: state.terminales.map(t => t.id === terminal?.id ? { ...t, proximoRecibo: nextNum + 1 } : t) 
       });
       
       setLastProcessedSale(saleAbono); 
       setShowReceiptModal(true); 
       setShowAbonoModal(null);
     } finally {
+      processingRef.current = false;
       setIsProcessing(false);
     }
   };
 
   const ejecutarVentaACredito = async (customer: Customer) => {
-    if (state.carrito.length === 0 || isProcessing) return;
+    if (state.carrito.length === 0) return;
+    if (processingRef.current) return;
     if (!customer) return alert("Seleccione un cliente.");
     
+    processingRef.current = true;
     setIsProcessing(true);
+
     try {
       const terminal = getCurrentTerminal();
       const nextNum = terminal?.proximoRecibo || state.proximoRecibo;
@@ -724,8 +856,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         movimientos: [...state.movimientos, ...nuevosMovimientos], 
         cxc: [...state.cxc, nuevaDeuda], 
         clientes: (state.clientes || []).map(c => c.id === customer.id ? { ...c, debt: (c.debt || 0) + subtotalUSD } : c), 
-        proximoRecibo: state.proximoRecibo + 1, 
-        terminales: state.terminales.map(t => t.id === terminal?.id ? { ...t, proximoRecibo: t.proximoRecibo + 1 } : t), 
+        proximoRecibo: nextNum + 1, 
+        terminales: state.terminales.map(t => t.id === terminal?.id ? { ...t, proximoRecibo: nextNum + 1 } : t), 
         carrito: [] 
       });
       
@@ -734,6 +866,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       setIsCreditModalOpen(false); 
       setSelectedClient(null);
     } finally {
+      processingRef.current = false;
       setIsProcessing(false);
     }
   };
@@ -757,7 +890,9 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     setTimeout(() => ejecutarVentaACredito(customer), 100);
   };
 
-  // ===== CORRECCIÓN: VENTA DE EFECTIVO - SOLO COMISIÓN =====
+  // ============================================================
+  // FUNCIÓN MODIFICADA: VENTA DE EFECTIVO CON PREFIJO "EFE-" Y ASIENTO DE EGRESO
+  // ============================================================
   const procesarVentaEfectivo = (data: {
     montoEfectivoBS: number;
     totalAPagarBS: number;
@@ -767,7 +902,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     const ahoraStr = Utils.ahora();
     const terminal = getCurrentTerminal();
     const nextNum = terminal?.proximoRecibo || state.proximoRecibo;
-    const reciboId = String(nextNum).padStart(9, '0');
+    const reciboId = 'EFE-' + String(nextNum).padStart(7, '0');
 
     const totalUSD = data.totalAPagarBS / state.tasa;
     const efectivoUSD = data.montoEfectivoBS / state.tasa;
@@ -811,7 +946,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       tasa: state.tasa
     };
 
-    // ===== ASIENTO CONTABLE: Solo se registra la COMISIÓN =====
     const asientoComision: LibroDiarioEntry = {
       id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
       fecha: ahoraStr,
@@ -824,14 +958,22 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       referencia: reciboId + '-' + (terminal?.id || 'GLOBAL')
     };
 
-    // ===== SOLO SE GUARDA EL ASIENTO DE COMISIÓN =====
+    // 🔑 ASIENTO DE EGRESO POR EFECTIVO ENTREGADO (categoría VENTA_EFECTIVO)
+    const asientoEfectivoEntregado: LibroDiarioEntry = {
+      id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5) + 'E',
+      fecha: ahoraStr,
+      tipo: 'egreso',
+      categoria: 'VENTA_EFECTIVO',
+      concepto: `ENTREGA DE EFECTIVO EN BS - VENTA #${reciboId} - CLIENTE: ${cliente || 'CONSUMIDOR FINAL'}`,
+      montoUSD: efectivoUSD,
+      montoBS: data.montoEfectivoBS,
+      metodo: 'efectivo_bs', // Siempre en bolívares
+      referencia: reciboId + '-' + (terminal?.id || 'GLOBAL')
+    };
+
     updateState({
       ventas: [...state.ventas, nuevaVenta],
-      libroDiario: [...(state.libroDiario || []), asientoComision],
-      proximoRecibo: state.proximoRecibo + 1,
-      terminales: state.terminales.map(t => 
-        t.id === terminal?.id ? { ...t, proximoRecibo: t.proximoRecibo + 1 } : t
-      )
+      libroDiario: [asientoComision, asientoEfectivoEntregado, ...(state.libroDiario || [])],
     });
 
     toast({
@@ -843,8 +985,83 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     setShowCashSaleModal(false);
   };
 
+  // ============================================================
+  // FILTRO DE HISTORIAL POR FECHA
+  // ============================================================
+  const filteredHistory = useMemo(() => {
+    let list = (state.ventas || []).filter(v => 
+      v.terminalId === currentTerminal?.id && 
+      v.fecha > (state.fechaUltimoZ || '') &&
+      v.estado !== 'anulada'
+    );
+
+    if (list.length === 0) return [];
+
+    const today = Utils.hoy();
+    let from = today, to = today;
+
+    if (historyDateFilter === 'today') {
+      from = today;
+      to = today;
+    } else if (historyDateFilter === 'yesterday') {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      from = yesterday.toISOString().slice(0,10);
+      to = from;
+    } else if (historyDateFilter === 'month') {
+      const now = new Date();
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+      from = firstDay.toISOString().slice(0,10);
+      to = today;
+    } else if (historyDateFilter === 'custom') {
+      from = historyDateFrom;
+      to = historyDateTo;
+    }
+
+    return list.filter(v => {
+      const vDate = v.fecha.slice(0,10);
+      return vDate >= from && vDate <= to;
+    });
+  }, [state.ventas, currentTerminal, state.fechaUltimoZ, historyDateFilter, historyDateFrom, historyDateTo]);
+
+  // ============================================================
+  // PAGINACIÓN DEL HISTORIAL
+  // ============================================================
+  const totalPages = Math.ceil(filteredHistory.length / pageSize);
+  const paginatedHistory = filteredHistory.slice((historyPage - 1) * pageSize, historyPage * pageSize);
+
+  // ============================================================
+  // MANEJADORES DEL BUSCADOR CON TECLADO
+  // ============================================================
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const list = matches;
+    if (list.length === 0) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedSearchIndex(prev => (prev + 1) % list.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedSearchIndex(prev => (prev - 1 + list.length) % list.length);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const idx = selectedSearchIndex >= 0 ? selectedSearchIndex : 0;
+      if (list[idx]) {
+        agregar(list[idx].id);
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setSearch('');
+      setSelectedSearchIndex(-1);
+    }
+  };
+
+  // ============================================================
+  // RENDER
+  // ============================================================
   return (
     <div className="flex flex-col gap-2 h-[calc(100vh-100px)] max-w-7xl mx-auto w-full overflow-hidden">
+      {/* ===== BARRA DE HERRAMIENTAS ===== */}
       <div className="flex gap-2 no-print shrink-0 overflow-x-auto pb-1 items-center">
         <button onClick={() => setView('pos')} className={`btn btn-sm ${view === 'pos' ? 'btn-primary shadow-md' : 'bg-white text-ink font-bold border-line border'}`}><ShoppingCart className="w-3.5 h-3.5"/> Punto de Venta</button>
         <button onClick={() => setView('history')} className={`btn btn-sm ${view === 'history' ? 'btn-primary shadow-md' : 'bg-white text-ink font-bold border-line border'}`}><History className="w-3.5 h-3.5"/> Historial</button>
@@ -864,26 +1081,56 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         )}
       </div>
 
+      {/* ===== VISTA POS ===== */}
       {view === 'pos' ? (
         <div className={cn(
           "flex flex-col gap-2 flex-1 overflow-hidden animate-in fade-in duration-300",
           isFullScreen && "fixed inset-0 z-[100] bg-surface-warm p-6 overflow-hidden flex flex-col"
         )}>
           <div className="flex items-center gap-3 shrink-0 mb-1">
+            {/* ===== BUSCADOR CON NAVEGACIÓN POR TECLADO ===== */}
             <div className="relative group flex-1">
               <div className="absolute left-4 top-1/2 -translate-y-1/2 text-[#c8952e] z-10"><Barcode className="w-5 h-5" /></div>
-              <input ref={searchInputRef} className="form-input pl-14 py-2 text-base bg-white border-brand-gold/30 text-ink font-black placeholder-ink/40" placeholder="Escanee o busque producto..." value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && matches.length >= 1 && agregar(matches[0].id)} autoFocus />
+              <input
+                ref={searchInputRef}
+                className="form-input pl-14 py-2 text-base bg-white border-brand-gold/30 text-ink font-black placeholder-ink/40"
+                placeholder="Escanee o busque producto..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                onKeyDown={handleSearchKeyDown}
+                autoFocus
+              />
               {matches.length > 0 && (
                 <div className="absolute top-full left-0 right-0 bg-white border border-line rounded-b-lg shadow-2xl z-[100] mt-1 overflow-hidden">
-                  {matches.map(p => (
-                    <div key={p.id} onClick={() => agregar(p.id)} className="flex items-center justify-between p-3 hover:bg-brand-gold/10 cursor-pointer border-b border-line group">
+                  {matches.map((p, index) => (
+                    <div
+                      key={p.id}
+                      onClick={() => agregar(p.id)}
+                      className={`flex items-center justify-between p-3 cursor-pointer border-b border-line transition-colors ${
+                        selectedSearchIndex === index ? 'bg-brand-gold/20 border-brand-gold' : 'hover:bg-brand-gold/10'
+                      }`}
+                    >
                       <div className="flex flex-col flex-1 min-w-0">
-                        <span className="text-ink text-sm font-black uppercase truncate group-hover:text-brand-gold-deep transition-colors">{p.nombre}</span>
+                        <span className="text-ink text-sm font-black uppercase truncate">{p.nombre}</span>
                         <span className="text-ink/60 text-[10px] mono font-bold">{p.codigo}</span>
                       </div>
                       <div className="flex items-center gap-10 shrink-0 ml-4">
-                         <div className="flex flex-col items-end min-w-[70px]"><span className="text-[9px] font-black uppercase text-ink/40 mb-0.5">Stock</span><span className={`text-lg font-black leading-none ${p.stock <= (p.stockMinimo || 3) ? 'text-red-600' : p.stock <= (p.stockMinimo || 3) * 2 ? 'text-amber-500' : 'text-green-600'}`}>{p.stock} <span className="text-[10px] opacity-60">Und.</span></span></div>
-                         <div className="flex items-center gap-2"><div className="flex flex-col items-end min-w-[90px]"><span className="text-[9px] font-black uppercase text-ink/40 mb-0.5">Precio USD</span><span className="text-lg font-black leading-none text-ink">{Utils.fmtUSD(p.precioUSD)}</span></div><div className="flex flex-col items-end min-w-[110px]"><span className="text-[9px] font-black uppercase text-ink/40 mb-0.5">Equiv. BS</span><span className="text-lg font-black leading-none text-brand-gold-deep">{Utils.fmtBS(p.precioUSD * state.tasa)}</span></div></div>
+                         <div className="flex flex-col items-end min-w-[70px]">
+                           <span className="text-[9px] font-black uppercase text-ink/40 mb-0.5">Stock</span>
+                           <span className={`text-lg font-black leading-none ${p.stock <= (p.stockMinimo || 3) ? 'text-red-600' : p.stock <= (p.stockMinimo || 3) * 2 ? 'text-amber-500' : 'text-green-600'}`}>
+                             {p.stock} <span className="text-[10px] opacity-60">Und.</span>
+                           </span>
+                         </div>
+                         <div className="flex items-center gap-2">
+                           <div className="flex flex-col items-end min-w-[90px]">
+                             <span className="text-[9px] font-black uppercase text-ink/40 mb-0.5">Precio USD</span>
+                             <span className="text-lg font-black leading-none text-ink">{Utils.fmtUSD(p.precioUSD)}</span>
+                           </div>
+                           <div className="flex flex-col items-end min-w-[110px]">
+                             <span className="text-[9px] font-black uppercase text-ink/40 mb-0.5">Equiv. BS</span>
+                             <span className="text-lg font-black leading-none text-brand-gold-deep">{Utils.fmtBS(p.precioUSD * state.tasa)}</span>
+                           </div>
+                         </div>
                       </div>
                     </div>
                   ))}
@@ -891,13 +1138,16 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
               )}
             </div>
 
+            {/* ===== TASA ===== */}
             <div className="flex items-center gap-2 bg-white px-4 py-1.5 rounded-full border border-brand-gold/30 shadow-sm shrink-0">
               <div className="w-8 h-8 rounded-full overflow-hidden border border-line shrink-0"><img src="/bcv-logo.png" alt="BCV" className="w-full h-full object-cover" /></div>
               <div className="flex items-center gap-1.5">{!editandoTasa ? (<><span className="text-ink font-black text-sm tabular-nums">{state.tasa.toFixed(2)}</span><button onClick={() => { setEditandoTasa(true); setNuevaTasa(state.tasa.toString()); }} className="text-brand-gold hover:text-brand-gold-deep p-0.5 transition-colors"><RefreshCw className="w-3.5 h-3.5" /></button></>) : (<><input type="text" value={nuevaTasa} onChange={e => setNuevaTasa(e.target.value.replace(/[^0-9.]/g, ''))} className="w-16 bg-surface-soft border border-brand-gold rounded px-1.5 py-0.5 text-ink font-black text-sm text-right outline-none" autoFocus /><button onClick={guardarNuevaTasa} className="text-status-success p-0.5"><Check className="w-4 h-4" /></button><button onClick={() => setEditandoTasa(false)} className="text-status-danger p-0.5"><X className="w-4 h-4" /></button></>)}</div>
             </div>
           </div>
 
+          {/* ===== CUERPO PRINCIPAL ===== */}
           <div className="flex flex-1 gap-3 overflow-hidden">
+            {/* ===== COLUMNA IZQUIERDA ===== */}
             <div className="w-1/4 flex flex-col gap-2">
               <div className="card p-3 space-y-3 bg-white border-line h-full flex flex-col">
                 <div className="form-group mb-0">
@@ -917,9 +1167,53 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                 <div className="flex-1 overflow-y-auto space-y-2 pt-2 border-t border-line/10">
                   {selectedProductDisplay && (
                     <div className="space-y-3 animate-in slide-in-from-bottom-2 duration-300">
-                       <div className="p-3 bg-surface-soft border border-line rounded-xl text-center"><span className="text-[9px] font-black uppercase text-ink opacity-40 block mb-1">STOCK DISPONIBLE</span><span className={`text-2xl font-black ${selectedProductDisplay.stock <= (selectedProductDisplay.stockMinimo || 3) ? 'text-status-danger' : selectedProductDisplay.stock <= (selectedProductDisplay.stockMinimo || 3) * 2 ? 'text-status-warn' : 'text-status-success'}`}>{selectedProductDisplay.stock} <span className="text-xs">UND</span></span></div>
-                       <div className="p-3 bg-surface-soft border border-line rounded-xl text-center"><span className="text-[9px] font-black uppercase text-ink opacity-40 block mb-1">PRECIO UNITARIO USD</span><span className="text-2xl font-black text-ink">{Utils.fmtUSD(selectedProductDisplay.precioUSD)}</span></div>
-                       <div className="p-3 bg-brand-gold-soft/30 border border-brand-gold-soft/30 rounded-xl text-center"><span className="text-[9px] font-black uppercase text-brand-gold-deep block mb-1">EQUIVALENTE EN BOLÍVARES</span><span className="text-2xl font-black text-brand-gold-deep">{Utils.fmtBS(selectedProductDisplay.precioUSD * state.tasa)}</span></div>
+                       <div className="p-3 bg-surface-soft border border-line rounded-xl text-center">
+                         <span className="text-[9px] font-black uppercase text-ink opacity-40 block mb-1">STOCK DISPONIBLE</span>
+                         <span className={`text-2xl font-black ${selectedProductDisplay.stock <= (selectedProductDisplay.stockMinimo || 3) ? 'text-status-danger' : selectedProductDisplay.stock <= (selectedProductDisplay.stockMinimo || 3) * 2 ? 'text-status-warn' : 'text-status-success'}`}>
+                           {selectedProductDisplay.stock} <span className="text-xs">{selectedProductDisplay.cantidad || 'UND'}</span>
+                         </span>
+                       </div>
+                       <div className="p-3 bg-surface-soft border border-line rounded-xl text-center">
+                         <span className="text-[9px] font-black uppercase text-ink opacity-40 block mb-1">PRECIO UNITARIO USD</span>
+                         <span className="text-2xl font-black text-ink">{Utils.fmtUSD(selectedProductDisplay.precioUSD)}</span>
+                       </div>
+                       <div className="p-3 bg-brand-gold-soft/30 border border-brand-gold-soft/30 rounded-xl text-center">
+                         <span className="text-[9px] font-black uppercase text-brand-gold-deep block mb-1">EQUIVALENTE EN BOLÍVARES</span>
+                         <span className="text-2xl font-black text-brand-gold-deep">{Utils.fmtBS(selectedProductDisplay.precioUSD * state.tasa)}</span>
+                       </div>
+
+                       {/* ===== NUEVO: VENTA POR MONTO (actualización automática) ===== */}
+                       <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-xl">
+                         <p className="text-[9px] font-black uppercase text-blue-700 text-center mb-2">VENTA POR MONTO (BS.)</p>
+                         <div className="flex items-center gap-2">
+                           <span className="text-ink font-black text-sm">Bs.</span>
+                           <input
+                             type="text"
+                             className="flex-1 h-8 px-2 text-center font-black text-sm bg-white border border-blue-300 rounded focus:ring-2 focus:ring-blue-400 focus:outline-none"
+                             placeholder="0,00"
+                             value={montoVentaBS}
+                             onChange={(e) => {
+                               const clean = e.target.value.replace(/[^0-9.]/g, '');
+                               setMontoVentaBS(clean);
+                             }}
+                           />
+                           <button
+                             onClick={() => {
+                               if (selectedProductDisplay && montoVentaBS) {
+                                 // Ya se actualiza automáticamente
+                               }
+                             }}
+                             className="h-8 px-3 bg-blue-600 text-white rounded font-black text-[10px] uppercase hover:bg-blue-700 transition-colors shrink-0"
+                           >
+                             Aplicar
+                           </button>
+                         </div>
+                         {cantidadCalculada !== null && cantidadCalculada > 0 && (
+                           <p className="text-[8px] text-blue-600 font-black text-center mt-1">
+                             {cantidadCalculada.toFixed(2)} {selectedProductDisplay.cantidad || 'und'} ≈ {Utils.fmtBS(parseFloat(montoVentaBS.replace(/\./g, '')) || 0)}
+                           </p>
+                         )}
+                       </div>
                     </div>
                   )}
                   {state.carrito.length > 0 && (
@@ -929,6 +1223,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
               </div>
             </div>
 
+            {/* ===== COLUMNA DERECHA (CARRITO) ===== */}
             <div className="w-3/4 flex flex-col gap-2 overflow-hidden">
               <div className="card flex-1 flex flex-col overflow-hidden bg-white border-none shadow-xl">
                 <div className="grid grid-cols-[1fr_80px_70px_35px_80px_80px_80px_35px] gap-1 px-3 py-3 bg-ink text-white text-[10px] font-black uppercase tracking-[0.12em] rounded-t-lg">
@@ -947,7 +1242,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                     return (
                       <div key={i} className="grid grid-cols-[1fr_80px_70px_35px_80px_80px_80px_35px] gap-1 items-center px-3 py-3 bg-white border-b border-black/5 text-ink">
                         <div className="truncate font-black text-xs uppercase leading-tight">{item.nombre}</div>
-                        
                         <div className="flex justify-center">
                           <input
                             type="number"
@@ -969,7 +1263,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                             }}
                           />
                         </div>
-                        
                         <div className="text-center text-[10px] font-black uppercase">{prod?.cantidad || '-'}</div>
                         <div className="flex justify-center">
                           <button 
@@ -1000,7 +1293,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                   <div className="flex-1 flex justify-end items-center pr-4">
                     <div className="text-4xl font-black text-white">{Utils.fmtBS(totalBS)}</div>
                   </div>
-                  
                   <div className="flex items-center gap-3">
                     {isFullScreen && (
                       <button 
@@ -1034,6 +1326,54 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
               <ArrowLeft className="w-3.5 h-3.5"/> Volver al POS
             </button>
           </div>
+          <div className="p-3 bg-surface-soft border-b border-line flex flex-wrap items-center gap-2">
+            <span className="text-[10px] font-black uppercase text-ink/50 mr-2">Filtrar por:</span>
+            <button 
+              onClick={() => setHistoryDateFilter('today')} 
+              className={`px-3 py-1 rounded-md text-[10px] font-black uppercase transition-all ${historyDateFilter === 'today' ? 'bg-brand-gold text-ink' : 'bg-white text-ink/50 border border-line'}`}
+            >
+              Hoy
+            </button>
+            <button 
+              onClick={() => setHistoryDateFilter('yesterday')} 
+              className={`px-3 py-1 rounded-md text-[10px] font-black uppercase transition-all ${historyDateFilter === 'yesterday' ? 'bg-brand-gold text-ink' : 'bg-white text-ink/50 border border-line'}`}
+            >
+              Ayer
+            </button>
+            <button 
+              onClick={() => setHistoryDateFilter('month')} 
+              className={`px-3 py-1 rounded-md text-[10px] font-black uppercase transition-all ${historyDateFilter === 'month' ? 'bg-brand-gold text-ink' : 'bg-white text-ink/50 border border-line'}`}
+            >
+              Mes
+            </button>
+            <button 
+              onClick={() => setHistoryDateFilter('custom')} 
+              className={`px-3 py-1 rounded-md text-[10px] font-black uppercase transition-all ${historyDateFilter === 'custom' ? 'bg-brand-gold text-ink' : 'bg-white text-ink/50 border border-line'}`}
+            >
+              Periodo
+            </button>
+            {historyDateFilter === 'custom' && (
+              <div className="flex items-center gap-2 ml-2">
+                <input 
+                  type="date" 
+                  className="form-input h-8 text-xs font-bold bg-white border-line"
+                  value={historyDateFrom}
+                  onChange={e => setHistoryDateFrom(e.target.value)}
+                />
+                <span className="text-xs font-black text-ink/50">–</span>
+                <input 
+                  type="date" 
+                  className="form-input h-8 text-xs font-bold bg-white border-line"
+                  value={historyDateTo}
+                  onChange={e => setHistoryDateTo(e.target.value)}
+                />
+              </div>
+            )}
+            <span className="text-[10px] font-black text-ink/40 ml-auto">
+              {filteredHistory.length} registros
+            </span>
+          </div>
+
           <div className="table-wrap flex-1 overflow-y-auto">
             <table>
               <thead>
@@ -1046,28 +1386,66 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                   <th className="text-right">Monto USD</th>
                   <th>Método</th>
                   <th className="text-center">Estado</th>
+                  <th className="text-center">Acción</th>
                 </tr>
               </thead>
               <tbody>
-                {(state.ventas || []).filter(v => v.terminalId === currentTerminal?.id && v.fecha > (state.fechaUltimoZ || '')).sort((a,b) => b.fecha.localeCompare(a.fecha)).map(v => (
-                  <tr key={v.id} className="border-b border-line/40 hover:bg-surface-warm/20">
-                    <td className="text-ink font-black text-xs mono">{v.id}</td>
-                    <td className="text-ink font-bold text-xs">{v.fecha.split('T')[1]?.slice(0, 5)}</td>
-                    <td className="text-ink font-black text-[10px] uppercase">{v.terminalName || state.terminales.find(t => t.id === v.terminalId)?.nombre || '-'}</td>
-                    <td className="text-ink font-black text-xs uppercase truncate max-w-[150px]">{v.cliente}</td>
-                    <td className="text-ink font-black text-[9px] uppercase">
-                      <span className={`badge ${v.type === 'COBRO DEUDA' ? 'badge-info' : 'badge-neutral'}`}>{v.type || 'VENTA'}</span>
-                    </td>
-                    <td className="text-brand-gold-deep font-black text-xs text-right">{Utils.fmtUSD(v.totalUSD)}</td>
-                    <td className="text-ink font-bold text-[10px] uppercase">{Utils.metodoLabel(v.metodoPago)}</td>
-                    <td className="text-center">
-                      <span className={`badge ${v.estado === 'pendiente' ? 'badge-warn' : (v.estado === 'anulada' ? 'badge-err' : 'badge-ok')} font-black text-[9px] uppercase`}>{v.estado}</span>
-                    </td>
-                  </tr>
-                ))}
+                {paginatedHistory.length === 0 ? (
+                  <tr><td colSpan={9} className="text-center py-20 text-ink/20 font-black italic uppercase">No hay ventas en este período</td></tr>
+                ) : (
+                  paginatedHistory.sort((a,b) => b.fecha.localeCompare(a.fecha)).map(v => (
+                    <tr key={v.id} className="border-b border-line/40 hover:bg-surface-warm/20">
+                      <td className="text-ink font-black text-xs mono">{v.id}</td>
+                      <td className="text-ink font-bold text-xs">{v.fecha.split('T')[1]?.slice(0, 5)}</td>
+                      <td className="text-ink font-black text-[10px] uppercase">{v.terminalName || state.terminales.find(t => t.id === v.terminalId)?.nombre || '-'}</td>
+                      <td className="text-ink font-black text-xs uppercase truncate max-w-[150px]">{v.cliente}</td>
+                      <td className="text-ink font-black text-[9px] uppercase">
+                        <span className={`badge ${v.type === 'COBRO DEUDA' ? 'badge-info' : 'badge-neutral'}`}>{v.type || 'VENTA'}</span>
+                      </td>
+                      <td className="text-brand-gold-deep font-black text-xs text-right">{Utils.fmtUSD(v.totalUSD)}</td>
+                      <td className="text-ink font-bold text-[10px] uppercase">{Utils.metodoLabel(v.metodoPago)}</td>
+                      <td className="text-center">
+                        <span className={`badge ${v.estado === 'pendiente' ? 'badge-warn' : (v.estado === 'anulada' ? 'badge-err' : 'badge-ok')} font-black text-[9px] uppercase`}>{v.estado}</span>
+                      </td>
+                      <td className="text-center">
+                        <button 
+                          onClick={() => setShowDetails(v)} 
+                          className="w-8 h-8 rounded-full flex items-center justify-center text-status-info hover:bg-status-info/10 transition-colors"
+                          title="Ver detalle completo"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
+
+          {totalPages > 1 && (
+            <div className="p-3 bg-surface-soft border-t border-line flex justify-between items-center">
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => setHistoryPage(p => Math.max(1, p - 1))} 
+                  disabled={historyPage === 1}
+                  className="px-4 py-1.5 rounded-md text-[10px] font-black uppercase bg-white border border-line disabled:opacity-40 disabled:cursor-not-allowed hover:bg-brand-gold-soft transition-colors"
+                >
+                  Anterior
+                </button>
+                <button 
+                  onClick={() => setHistoryPage(p => Math.min(totalPages, p + 1))} 
+                  disabled={historyPage === totalPages}
+                  className="px-4 py-1.5 rounded-md text-[10px] font-black uppercase bg-white border border-line disabled:opacity-40 disabled:cursor-not-allowed hover:bg-brand-gold-soft transition-colors"
+                >
+                  Siguiente
+                </button>
+              </div>
+              <span className="text-[10px] font-black text-ink/60">
+                Página {historyPage} de {totalPages}
+              </span>
+            </div>
+          )}
         </div>
       ) : view === 'credits' ? (
         <div className="card flex-1 bg-white flex flex-col overflow-hidden animate-in slide-in-from-bottom-2 duration-300 rounded-xl">
@@ -1163,6 +1541,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         <ReturnsModule state={state} updateState={updateState} onBackToPOS={() => setView('pos')} terminalId={currentTerminal?.id} />
       )}
 
+      {/* ===== MODALES ===== */}
       {priceSelectorItem && (
         <div className="modal show" style={{ zIndex: 120 }}>
           <div className="modal-bg" onClick={() => setPriceSelectorItem(null)}></div>
@@ -1271,19 +1650,19 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
           <div className="modal-box max-w-[600px] bg-white border-2 border-line rounded-xl overflow-hidden shadow-2xl">
             <div className="modal-head py-4 px-6 border-b border-line bg-ink flex justify-between items-center text-white">
               <h3 className="font-black text-xs uppercase italic tracking-tighter flex items-center gap-2">
-                <Receipt className="w-5 h-5 text-brand-gold" /> HISTORIAL DETALLADO: {showDetails.id}
+                <Receipt className="w-5 h-5 text-brand-gold" /> DETALLE DE TRANSACCIÓN: {showDetails.id}
               </h3>
               <button onClick={() => setShowDetails(null)} className="text-white hover:text-brand-gold"><X className="w-5 h-5"/></button>
             </div>
             <div className="modal-body p-6 space-y-6 max-h-[75vh] overflow-y-auto bg-white">
               <div className="grid grid-cols-2 gap-4">
                  <div className="p-3 bg-surface-soft rounded-lg border border-line">
-                    <label className="text-[8px] font-black uppercase text-ink block mb-1">Monto Original</label>
-                    <p className="text-lg font-black text-ink">{Utils.fmtUSD(showDetails.montoUSD)}</p>
+                    <label className="text-[8px] font-black uppercase text-ink block mb-1">Monto Total</label>
+                    <p className="text-lg font-black text-ink">{Utils.fmtUSD(showDetails.totalUSD || showDetails.montoUSD || 0)}</p>
                  </div>
                  <div className="p-3 bg-brand-gold-soft border border-brand-gold/20 rounded-lg">
-                    <label className="text-[8px] font-black uppercase text-brand-gold-deep block mb-1">Saldo Actual</label>
-                    <p className="text-lg font-black text-brand-gold-deep">{Utils.fmtUSD(showDetails.saldoUSD)}</p>
+                    <label className="text-[8px] font-black uppercase text-brand-gold-deep block mb-1">Cliente</label>
+                    <p className="text-sm font-black text-brand-gold-deep uppercase">{showDetails.cliente || showDetails.cliente || 'N/A'}</p>
                  </div>
               </div>
 
@@ -1293,7 +1672,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                 return (
                   <div className="space-y-3 animate-in slide-in-from-top-2 duration-300">
                     <div className="flex justify-between items-center border-b border-line pb-2">
-                       <h4 className="text-[10px] font-black uppercase text-ink tracking-[0.2em]">DETALLE DE COMPRA ORIGINAL</h4>
+                       <h4 className="text-[10px] font-black uppercase text-ink tracking-[0.2em]">DETALLE DE COMPRA</h4>
                        <span className="text-[9px] font-black text-ink uppercase">{Utils.fmtFecha(sale.fecha)}</span>
                     </div>
                     <div className="bg-surface-soft/50 rounded-lg overflow-hidden border border-line/30">
@@ -1318,31 +1697,47 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                           </tbody>
                        </table>
                     </div>
+
+                    {sale.payments && sale.payments.length > 0 && (
+                      <div className="space-y-2">
+                        <h5 className="text-[9px] font-black uppercase text-ink/60 border-b border-line/30 pb-1">Métodos de Pago</h5>
+                        <div className="space-y-1">
+                          {sale.payments.map((p: any, idx: number) => (
+                            <div key={idx} className="flex justify-between items-center bg-white rounded-lg border border-line/20 px-3 py-2">
+                              <span className="text-[10px] font-black uppercase text-ink">{Utils.metodoLabel(p.metodo)}</span>
+                              <span className="text-[10px] font-black text-brand-gold-deep">{Utils.fmtUSD(p.montoUSD)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })()}
 
-              <div className="space-y-3">
-                 <h4 className="text-[10px] font-black uppercase text-ink tracking-[0.2em] border-b border-line pb-2">CRONOLOGÍA DE ABONOS</h4>
-                 <div className="max-h-[200px] overflow-y-auto space-y-2 pr-1">
-                    {(!showDetails.historialPagos || showDetails.historialPagos.length === 0) ? (
-                      <div className="py-10 text-center text-ink font-black uppercase italic text-[10px]">No se han registrado abonos aún</div>
-                    ) : (
-                      showDetails.historialPagos.map((p: any, idx: number) => (
-                        <div key={idx} className="flex justify-between items-center p-3 bg-surface-soft border border-line rounded-lg">
-                           <div className="space-y-0.5">
-                              <p className="text-[10px] font-black text-ink uppercase">{Utils.fmtFecha(p.fecha)}</p>
-                              <p className="text-[8px] font-black text-ink mono">REF: {p.reciboId}</p>
-                           </div>
-                           <div className="text-right">
-                              <p className="text-xs font-black text-status-success">+{Utils.fmtUSD(p.montoUSD)}</p>
-                              <p className="text-[8px] font-black text-ink uppercase">{Utils.metodoLabel(p.metodo || 'otros')}</p>
-                           </div>
-                        </div>
-                      ))
-                    )}
-                 </div>
-              </div>
+              {showDetails.historialPagos && (
+                <div className="space-y-3">
+                   <h4 className="text-[10px] font-black uppercase text-ink tracking-[0.2em] border-b border-line pb-2">CRONOLOGÍA DE ABONOS</h4>
+                   <div className="max-h-[200px] overflow-y-auto space-y-2 pr-1">
+                      {showDetails.historialPagos.length === 0 ? (
+                        <div className="py-10 text-center text-ink font-black uppercase italic text-[10px]">No se han registrado abonos aún</div>
+                      ) : (
+                        showDetails.historialPagos.map((p: any, idx: number) => (
+                          <div key={idx} className="flex justify-between items-center p-3 bg-surface-soft border border-line rounded-lg">
+                             <div className="space-y-0.5">
+                                <p className="text-[10px] font-black text-ink uppercase">{Utils.fmtFecha(p.fecha)}</p>
+                                <p className="text-[8px] font-black text-ink mono">REF: {p.reciboId}</p>
+                             </div>
+                             <div className="text-right">
+                                <p className="text-xs font-black text-status-success">+{Utils.fmtUSD(p.montoUSD)}</p>
+                                <p className="text-[8px] font-black text-ink uppercase">{Utils.metodoLabel(p.metodo || 'otros')}</p>
+                             </div>
+                          </div>
+                        ))
+                      )}
+                   </div>
+                </div>
+              )}
             </div>
             <div className="modal-foot p-4 bg-surface-soft border-t border-line text-right">
                <button onClick={() => setShowDetails(null)} className="btn btn-primary px-8 font-black uppercase text-[10px] rounded-lg shadow-md">Cerrar</button>

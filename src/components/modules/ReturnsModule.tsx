@@ -26,7 +26,7 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
   const [saleSearch, setSaleSearch] = useState('');
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
   const [returnItems, setReturnItems] = useState<ReturnItem[]>([]);
-  const [refundMethod, setRefundMethod] = useState<'EFECTIVO' | 'MISMO_METODO' | 'CREDITO_TIENDA'>('EFECTIVO');
+  const [refundMethod, setRefundMethod] = useState<'EFECTIVO_BS' | 'EFECTIVO_USD' | 'MISMO_METODO' | 'CREDITO_TIENDA'>('EFECTIVO_BS');
   const [reason, setMotivo] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
 
@@ -125,7 +125,13 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
         return v;
       });
 
-      // ===== ASIENTO CONTABLE CON TERMINAL EN REFERENCIA =====
+      // ===== ASIENTO CONTABLE CON MÉTODO CORRECTO =====
+      let metodoAsiento: string;
+      if (refundMethod === 'EFECTIVO_BS') metodoAsiento = 'efectivo_bs';
+      else if (refundMethod === 'EFECTIVO_USD') metodoAsiento = 'efectivo_usd';
+      else if (refundMethod === 'MISMO_METODO') metodoAsiento = selectedSale.metodoPago || 'otros';
+      else metodoAsiento = 'nota_credito';
+
       const nuevoAsiento: LibroDiarioEntry = {
         id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
         fecha: ahoraStr,
@@ -134,8 +140,8 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
         concepto: `DEVOLUCIÓN DINERO ${idDev} - REF VENTA ${selectedSale.id}`,
         montoUSD: totalDevuelto,
         montoBS: totalDevuelto * state.tasa,
-        metodo: refundMethod === 'EFECTIVO' ? 'efectivo_usd' : (refundMethod === 'MISMO_METODO' ? 'otros' : 'nota_credito'),
-        referencia: idDev + '-' + (terminalId || 'GLOBAL') // <--- AGREGADO TERMINAL ID
+        metodo: metodoAsiento,
+        referencia: idDev + '-' + (terminalId || 'GLOBAL')
       };
 
       updateState({
@@ -212,6 +218,8 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
 
       let nuevosAsientosDiario: LibroDiarioEntry[] = [];
       if (representaEgreso) {
+        // Usar el método de pago original de la venta para el egreso
+        const metodo = selectedSale.metodoPago || 'otros';
         nuevosAsientosDiario.push({
           id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
           fecha: ahoraStr,
@@ -220,7 +228,7 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
           concepto: `REINTEGRO POR ANULACIÓN FACTURA #${selectedSale.id}`,
           montoUSD: selectedSale.totalUSD,
           montoBS: selectedSale.totalBS,
-          metodo: selectedSale.metodoPago || 'otros',
+          metodo: metodo,
           referencia: idAnu + '-' + (terminalId || 'GLOBAL')
         });
       }
@@ -358,26 +366,31 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
                           <tr className="bg-surface-soft">
                             <th className="text-[9px] uppercase font-black text-ink">Producto</th>
                             <th className="text-[9px] uppercase text-center font-black text-ink">Cant. Compra</th>
-                            <th className="text-[9px] uppercase text-right font-black text-ink">Precio Hist.</th>
+                            <th className="text-[9px] uppercase text-right font-black text-ink">Precio Hist. (USD)</th>
+                            <th className="text-[9px] uppercase text-right font-black text-ink">Precio Hist. (Bs.)</th>
                             <th className="text-[9px] uppercase text-center font-black text-ink">Acción</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {selectedSale.items.map((item, idx) => (
-                            <tr key={idx} className="border-b border-line/30">
-                              <td className="text-ink font-bold text-xs uppercase">{item.nombre}</td>
-                              <td className="text-ink font-black text-xs text-center">{item.cantidad}</td>
-                              <td className="text-ink font-black text-xs text-right">{Utils.fmtUSD(item.precioUnitUSD)}</td>
-                              <td className="text-center">
-                                <button 
-                                  onClick={() => handleAddItem(item.productoId, item.nombre, item.precioUnitUSD, item.cantidad)}
-                                  className="btn btn-sm btn-secondary text-ink font-black text-[9px] uppercase h-7"
-                                >
-                                  Devolver Item
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
+                          {selectedSale.items.map((item, idx) => {
+                            const priceBS = item.precioUnitUSD * (selectedSale.tasa || state.tasa);
+                            return (
+                              <tr key={idx} className="border-b border-line/30">
+                                <td className="text-ink font-bold text-xs uppercase">{item.nombre}</td>
+                                <td className="text-ink font-black text-xs text-center">{item.cantidad}</td>
+                                <td className="text-ink font-black text-xs text-right">{Utils.fmtUSD(item.precioUnitUSD)}</td>
+                                <td className="text-ink font-black text-xs text-right">{Utils.fmtBS(priceBS)}</td>
+                                <td className="text-center">
+                                  <button 
+                                    onClick={() => handleAddItem(item.productoId, item.nombre, item.precioUnitUSD, item.cantidad)}
+                                    className="btn btn-sm btn-secondary text-ink font-black text-[9px] uppercase h-7"
+                                  >
+                                    Devolver Item
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -395,29 +408,36 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
                           <tr className="bg-surface-soft">
                             <th className="text-[9px] uppercase font-black text-ink">Producto</th>
                             <th className="text-[9px] uppercase text-center font-black text-ink">Cant.</th>
+                            <th className="text-[9px] uppercase text-right font-black text-ink">Precio USD</th>
+                            <th className="text-[9px] uppercase text-right font-black text-ink">Precio Bs.</th>
                             <th className="text-[9px] uppercase font-black text-ink">Estado / Destino</th>
                             <th className="text-[9px] uppercase text-right font-black text-ink">Subtotal</th>
                             <th className="text-[9px] uppercase text-center"></th>
                           </tr>
                         </thead>
                         <tbody>
-                          {returnItems.map((item, idx) => (
-                            <tr key={idx} className="border-b border-line/30">
-                              <td className="text-ink font-bold text-xs uppercase">{item.nombre}</td>
-                              <td className="text-status-danger font-black text-xs text-center">{item.cantidad}</td>
-                              <td>
-                                <span className={`badge ${item.estadoProducto === 'REINTEGRADO_STOCK' ? 'badge-ok' : 'badge-err'} font-black text-[8px] uppercase`}>
-                                  {item.estadoProducto.replace('_', ' ')}
-                                </span>
-                              </td>
-                              <td className="text-brand-gold-deep font-black text-xs text-right">{Utils.fmtUSD(item.cantidad * item.precioUnitUSD)}</td>
-                              <td className="text-center">
-                                <button onClick={() => setReturnItems(returnItems.filter((_, i) => i !== idx))} className="text-ink/20 hover:text-status-danger"><Trash2 className="w-3.5 h-3.5"/></button>
-                              </td>
-                            </tr>
-                          ))}
+                          {returnItems.map((item, idx) => {
+                            const priceBS = item.precioUnitUSD * (selectedSale?.tasa || state.tasa);
+                            return (
+                              <tr key={idx} className="border-b border-line/30">
+                                <td className="text-ink font-bold text-xs uppercase">{item.nombre}</td>
+                                <td className="text-status-danger font-black text-xs text-center">{item.cantidad}</td>
+                                <td className="text-ink font-black text-xs text-right">{Utils.fmtUSD(item.precioUnitUSD)}</td>
+                                <td className="text-ink font-black text-xs text-right">{Utils.fmtBS(priceBS)}</td>
+                                <td>
+                                  <span className={`badge ${item.estadoProducto === 'REINTEGRADO_STOCK' ? 'badge-ok' : 'badge-err'} font-black text-[8px] uppercase`}>
+                                    {item.estadoProducto.replace('_', ' ')}
+                                  </span>
+                                </td>
+                                <td className="text-brand-gold-deep font-black text-xs text-right">{Utils.fmtUSD(item.cantidad * item.precioUnitUSD)}</td>
+                                <td className="text-center">
+                                  <button onClick={() => setReturnItems(returnItems.filter((_, i) => i !== idx))} className="text-ink/20 hover:text-status-danger"><Trash2 className="w-3.5 h-3.5"/></button>
+                                </td>
+                              </tr>
+                            );
+                          })}
                           {returnItems.length === 0 && (
-                            <tr><td colSpan={5} className="text-center py-10 text-ink/20 font-black uppercase italic text-[10px]">Añade productos para una devolución parcial</td></tr>
+                            <tr><td colSpan={7} className="text-center py-10 text-ink/20 font-black uppercase italic text-[10px]">Añade productos para una devolución parcial</td></tr>
                           )}
                         </tbody>
                       </table>
@@ -448,7 +468,8 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
                       value={refundMethod}
                       onChange={e => setRefundMethod(e.target.value as any)}
                     >
-                      <option value="EFECTIVO">Efectivo Bs.</option>
+                      <option value="EFECTIVO_BS">Efectivo Bs.</option>
+                      <option value="EFECTIVO_USD">Efectivo $</option>
                       <option value="MISMO_METODO">Reverso (Mismo Método)</option>
                       <option value="CREDITO_TIENDA">Crédito / Vale Interno</option>
                     </select>
