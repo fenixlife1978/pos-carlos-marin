@@ -218,7 +218,7 @@ export interface Return {
   totalUSD: number;
   metodoReembolso: string;
   motivo: string;
-  terminalId?: string; // <--- AGREGADO
+  terminalId?: string;
 }
 
 export interface Anulacion {
@@ -228,7 +228,7 @@ export interface Anulacion {
   totalUSD: number;
   motivo: string;
   items: any[];
-  terminalId?: string; // <--- AGREGADO
+  terminalId?: string;
 }
 
 export interface ReportZ {
@@ -251,7 +251,9 @@ export interface ReportZ {
   igtfUSD: number;
   metodosPago: Record<string, number>;
   salidasCajaUSD: number;
+  salidasCajaBS?: number; // <--- AGREGADO
   entradasCajaUSD: number;
+  entradasCajaBS?: number; // <--- AGREGADO (para futura consistencia)
   fondoAperturaUSD: number;
   fondoAperturaBS: number;
   acumuladoHistoricoUSD: number;

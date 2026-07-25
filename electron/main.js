@@ -7,11 +7,10 @@ const fs = require('fs');
 // CONFIGURACIÓN DE IMPRESIÓN (sin driver explícito)
 // ============================================================
 const PRINTER_CONFIG = {
-  type: PrinterTypes.STAR,              // O EPSON, según tu impresora
-  interface: 'printer:POS-80',          // Nombre de tu impresora en Windows
+  type: PrinterTypes.STAR,
+  interface: 'printer:POS-80',
   characterSet: CharacterSet.PC852_LATIN2,
   breakLine: BreakLine.WORD,
-  // driver: require('node-thermal-printer/drivers/windows') // <-- ELIMINADO
 };
 
 // ============================================================
@@ -72,12 +71,34 @@ function createWindow() {
     win.loadURL('http://localhost:9002');
     win.webContents.openDevTools();
   } else {
+    // ===== RUTA CORREGIDA: usar path.join con __dirname =====
     const indexPath = path.join(__dirname, '../out/index.html');
-    win.loadFile(indexPath);
+    
+    // Log para depuración
+    console.log('📁 Cargando index desde:', indexPath);
+    
+    win.loadFile(indexPath).catch((err) => {
+      console.error('❌ Error al cargar index.html:', err);
+      // Fallback: intentar cargar desde la raíz
+      const fallbackPath = path.join(process.resourcesPath, 'app.asar', 'out', 'index.html');
+      console.log('📁 Intentando fallback:', fallbackPath);
+      win.loadFile(fallbackPath).catch((err2) => {
+        console.error('❌ Fallback también falló:', err2);
+      });
+    });
   }
 
   win.once('ready-to-show', () => {
     win.show();
+  });
+
+  // Capturar errores de renderizado
+  win.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    console.error('❌ Error al cargar la página:', errorCode, errorDescription);
+  });
+
+  win.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    console.log('🖥️ Renderizado:', message);
   });
 
   win.on('closed', () => {});

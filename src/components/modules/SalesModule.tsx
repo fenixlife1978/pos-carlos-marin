@@ -258,6 +258,21 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     const totalSalidasCaja = relevantDiario.filter(e => e.tipo === 'egreso').reduce((s, e) => s + e.montoUSD, 0);
     const totalEntradasCaja = relevantDiario.filter(e => e.tipo === 'ingreso' && e.categoria !== 'VENTA' && e.categoria !== 'COBRO_DEUDA' && e.categoria !== 'COMISION_EFECTIVO').reduce((s, e) => s + e.montoUSD, 0);
 
+    // ===== SEPARAR SALIDAS Y ENTRADAS POR MONEDA =====
+    const salidasCajaUSD = relevantDiario
+      .filter(e => e.tipo === 'egreso' && e.metodo === 'efectivo_usd')
+      .reduce((s, e) => s + e.montoUSD, 0);
+    const salidasCajaBS = relevantDiario
+      .filter(e => e.tipo === 'egreso' && e.metodo === 'efectivo_bs')
+      .reduce((s, e) => s + e.montoBS, 0);
+
+    const entradasCajaUSD = relevantDiario
+      .filter(e => e.tipo === 'ingreso' && e.metodo === 'efectivo_usd' && e.categoria !== 'VENTA' && e.categoria !== 'COBRO_DEUDA' && e.categoria !== 'COMISION_EFECTIVO')
+      .reduce((s, e) => s + e.montoUSD, 0);
+    const entradasCajaBS = relevantDiario
+      .filter(e => e.tipo === 'ingreso' && e.metodo === 'efectivo_bs' && e.categoria !== 'VENTA' && e.categoria !== 'COBRO_DEUDA' && e.categoria !== 'COMISION_EFECTIVO')
+      .reduce((s, e) => s + e.montoBS, 0);
+
     const terminalName = currentTerminal ? currentTerminal.nombre : 'SISTEMA GLOBAL';
 
     return { 
@@ -265,6 +280,10 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       paymentMethods: paymentMethodsMap,
       manualSalidas: totalSalidasCaja,
       manualEntradas: totalEntradasCaja,
+      manualSalidasUSD: salidasCajaUSD,
+      manualSalidasBS: salidasCajaBS,
+      manualEntradasUSD: entradasCajaUSD,
+      manualEntradasBS: entradasCajaBS,
       fondoAperturaUSD: state.fondoCajaHoyUSD || 0,
       fondoAperturaBS: state.fondoCajaHoyBS || 0,
       desdeFactura, hastaFactura, desdeNC, hastaNC,
@@ -303,8 +322,15 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       desdeFactura: data.desdeFactura, hastaFactura: data.hastaFactura, desdeNotaCredito: data.desdeNC, hastaNotaCredito: data.hastaNC,
       cantidadAnuladas: data.stats.anulaciones, ventaBrutaUSD: data.brUSD, descuentoUSD: data.descUSD, devolucionesUSD: data.devUSD,
       ventaNetaUSD: data.netUSD, baseImponibleUSD: data.baseImponibleUSD, ivaUSD: data.ivaUSD, exentoUSD: data.exentoUSD,
-      igtfUSD: data.igtfUSD, metodosPago: { ...data.paymentMethods }, salidasCajaUSD: data.manualSalidas, entradasCajaUSD: data.manualEntradas,
-      fondoAperturaUSD: data.fondoAperturaUSD, fondoAperturaBS: data.fondoAperturaBS, acumuladoHistoricoUSD: data.acumuladoHistoricoUSD, stats: { ...data.stats },
+      igtfUSD: data.igtfUSD, metodosPago: { ...data.paymentMethods }, 
+      salidasCajaUSD: data.manualSalidasUSD || 0,
+      salidasCajaBS: data.manualSalidasBS || 0,
+      entradasCajaUSD: data.manualEntradasUSD || 0,
+      entradasCajaBS: data.manualEntradasBS || 0,
+      fondoAperturaUSD: data.fondoAperturaUSD, 
+      fondoAperturaBS: data.fondoAperturaBS, 
+      acumuladoHistoricoUSD: data.acumuladoHistoricoUSD, 
+      stats: { ...data.stats },
       ventaEfectivo: data.ventaEfectivo || { 
         totalVendidoUSD: 0, 
         totalVendidoBS: 0, 

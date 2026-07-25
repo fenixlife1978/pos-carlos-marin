@@ -7,11 +7,10 @@
   "description": "Sistema de Punto de Venta Profesional para Venezuela",
   "scripts": {
     "dev": "next dev --turbopack -p 9002",
-    "build": "npm run electron:build:main && next build",
+    "build": "next build",
     "start": "next start",
     "lint": "next lint",
     "electron:dev": "electron .",
-    "electron:build:main": "tsc -p electron/tsconfig.json",
     "electron:build": "npm run build && electron-builder",
     "electron:publish": "npm run build && electron-builder --publish always",
     "postinstall": "electron-builder install-app-deps"
@@ -94,10 +93,7 @@
       "target": [
         {
           "target": "nsis",
-          "arch": [
-            "x64",
-            "ia32"
-          ]
+          "arch": ["x64", "ia32"]
         }
       ],
       "icon": "public/posven-logo.png"

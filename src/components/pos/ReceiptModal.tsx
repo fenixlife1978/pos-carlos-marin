@@ -447,7 +447,7 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
                      </>
                    )}
 
-                   {/* ===== MOVIMIENTO DE CAJA ===== */}
+                   {/* ===== MOVIMIENTO DE CAJA - CORREGIDO (SALIDAS SEPARADAS POR MONEDA) ===== */}
                    <div className="text-center font-bold">MOVIMIENTO DE CAJA</div>
                    <div className="separator-dashed"></div>
                    {(() => {
@@ -489,13 +489,16 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
                        }
                      }
                      
-                     // ===== INCLUIR COBROS DE DEUDA EN EFECTIVO =====
+                     // ===== COBROS DE DEUDA EN EFECTIVO =====
                      const cobrosDeudaBs = data.cobrosDeudaBs || data.cobrosDeudaBS || 0;
                      const cobrosDeudaUsd = data.cobrosDeudaUsd || data.cobrosDeudaUSD || 0;
                      
-                     // Sumar cobros de deuda a las ventas en efectivo
                      const totalVentasEfectivoBs = ventasEfectivoBs + cobrosDeudaBs;
                      const totalVentasEfectivoUsd = ventasEfectivoUsd + cobrosDeudaUsd;
+
+                     // ===== SALIDAS DE EFECTIVO - SEPARADAS POR MONEDA =====
+                     const salidasCajaUSD = data.manualSalidasUSD || data.salidasCajaUSD || 0;
+                     const salidasCajaBS = data.manualSalidasBS || data.salidasCajaBS || 0;
                      
                      return (
                        <table><tbody>
@@ -515,8 +518,22 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
                              <td className="text-right">$ {formatUsd(cobrosDeudaUsd)}</td>
                            </tr>
                          )}
-                         <tr className="bold"><td>TOTAL ESTIMADO Bs.:</td><td className="text-right">{formatBs(fondoBs + totalVentasEfectivoBs)}</td></tr>
-                         <tr className="bold"><td>TOTAL ESTIMADO USD:</td><td className="text-right">$ {formatUsd(fondoUsd + totalVentasEfectivoUsd)}</td></tr>
+                         <tr className="text-status-danger">
+                           <td>SALIDAS DE EFECTIVO (DEV./ANUL.) Bs.:</td>
+                           <td className="text-right">{formatBs(salidasCajaBS)}</td>
+                         </tr>
+                         <tr className="text-status-danger">
+                           <td>SALIDAS DE EFECTIVO (DEV./ANUL.) USD:</td>
+                           <td className="text-right">$ {formatUsd(salidasCajaUSD)}</td>
+                         </tr>
+                         <tr className="bold">
+                           <td>TOTAL ESTIMADO Bs.:</td>
+                           <td className="text-right">{formatBs(fondoBs + totalVentasEfectivoBs - salidasCajaBS)}</td>
+                         </tr>
+                         <tr className="bold">
+                           <td>TOTAL ESTIMADO USD:</td>
+                           <td className="text-right">$ {formatUsd(fondoUsd + totalVentasEfectivoUsd - salidasCajaUSD)}</td>
+                         </tr>
                        </tbody></table>
                      );
                    })()}
