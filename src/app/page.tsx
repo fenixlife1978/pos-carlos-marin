@@ -29,11 +29,11 @@ import {
   CheckCircle2,
   Calendar
 } from 'lucide-react';
-import { Store, initialState, Utils } from '@/lib/db-store';
+import { Store, initialState, Utils, Collections } from '@/lib/db-store';
 import { AppState, Terminal, Debt } from '@/lib/types';
 import { auth, db } from '@/lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, onSnapshot, getDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import { doc, onSnapshot, getDoc, collection, getDocs } from 'firebase/firestore';
 import DashboardModule from '@/components/modules/DashboardModule';
 import { InventoryModule } from '@/components/modules/InventoryModule';
 import SalesModule from '@/components/modules/SalesModule';
@@ -62,32 +62,17 @@ export default function LicoreriaPOS() {
   const [showApertura, setShowApertura] = useState(false);
   const [aperturaData, setAperturaData] = useState({ bs: '', usd: '' });
   
-  // Estados para Notificaciones de CxP
   const [dueDebts, setDueDebts] = useState<Debt[]>([]);
   const [showCxPAlert, setShowCxPAlert] = useState(false);
   
   const moduleInitialized = useRef(false);
+  const unsubscribes = useRef<(() => void)[]>([]);
 
-  // Función para cargar terminales desde Firestore y actualizar estado local
-  const loadTerminalsFromFirestore = async () => {
-    if (!db) return [];
-    try {
-      const snapshot = await getDocs(collection(db, 'terminales'));
-      const terminales: Terminal[] = [];
-      snapshot.forEach(doc => {
-        terminales.push({ id: doc.id, ...doc.data() } as Terminal);
-      });
-      return terminales;
-    } catch (error) {
-      console.error("Error cargando terminales:", error);
-      return [];
-    }
-  };
-
+  // ============================================================
+  // INICIALIZACIÓN: CARGAR CONFIGURACIÓN Y SUSCRIBIRSE A COLECCIONES
+  // ============================================================
   useEffect(() => {
     setMounted(true);
-    let unsubscribeProfile: any = null;
-
     const timerSafety = setTimeout(() => {
       if (loading) {
         console.warn("Safety trigger: Acceso forzado tras tiempo de espera.");
@@ -100,85 +85,165 @@ export default function LicoreriaPOS() {
       return;
     }
 
+    // 1. Suscribirse a la configuración global (config/global)
+    const unsubConfig = Store.subscribe((configData: Partial<AppState>) => {
+      setState(prev => ({ ...prev, ...configData }) as AppState);
+    });
+
+    // 2. Suscribirse a colecciones raíz (solo si el usuario está autenticado)
+    const setupSubscriptions = (terminalId?: string) => {
+      // Limpiar suscripciones anteriores
+      unsubscribes.current.forEach(unsub => unsub());
+      unsubscribes.current = [];
+
+      // Productos (todos activos)
+      const unsubProducts = Collections.subscribeAll('productos', (list) => {
+        setState(prev => ({ ...prev, productos: list }) as AppState);
+      });
+      unsubscribes.current.push(unsubProducts);
+
+      // Terminales
+      const unsubTerminals = Collections.subscribeAll('terminales', (list) => {
+        setState(prev => ({ ...prev, terminales: list }) as AppState);
+      });
+      unsubscribes.current.push(unsubTerminals);
+
+      // Ventas (solo las del terminal actual)
+      const unsubSales = Collections.subscribeWhere('ventas', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
+        setState(prev => ({ ...prev, ventas: list }) as AppState);
+      });
+      unsubscribes.current.push(unsubSales);
+
+      // Clientes (todos)
+      const unsubClients = Collections.subscribeAll('clientes', (list) => {
+        setState(prev => ({ ...prev, clientes: list }) as AppState);
+      });
+      unsubscribes.current.push(unsubClients);
+
+      // CxC (todos)
+      const unsubCxc = Collections.subscribeAll('cxc', (list) => {
+        setState(prev => ({ ...prev, cxc: list }) as AppState);
+      });
+      unsubscribes.current.push(unsubCxc);
+
+      // CxP (todos)
+      const unsubCxp = Collections.subscribeAll('cxp', (list) => {
+        setState(prev => ({ ...prev, cxp: list }) as AppState);
+      });
+      unsubscribes.current.push(unsubCxp);
+
+      // Movimientos (solo del terminal actual)
+      const unsubMov = Collections.subscribeWhere('movimientos', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
+        setState(prev => ({ ...prev, movimientos: list }) as AppState);
+      });
+      unsubscribes.current.push(unsubMov);
+
+      // Libro diario (todos, se filtrará por terminalId en el componente)
+      const unsubDiario = Collections.subscribeAll('libroDiario', (list) => {
+        setState(prev => ({ ...prev, libroDiario: list }) as AppState);
+      });
+      unsubscribes.current.push(unsubDiario);
+
+      // Devoluciones (solo del terminal)
+      const unsubDev = Collections.subscribeWhere('devoluciones', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
+        setState(prev => ({ ...prev, devoluciones: list }) as AppState);
+      });
+      unsubscribes.current.push(unsubDev);
+
+      // Anulaciones (solo del terminal)
+      const unsubAnu = Collections.subscribeWhere('anulaciones', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
+        setState(prev => ({ ...prev, anulaciones: list }) as AppState);
+      });
+      unsubscribes.current.push(unsubAnu);
+
+      // Reportes Z (solo del terminal)
+      const unsubZ = Collections.subscribeWhere('reportesZ', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
+        setState(prev => ({ ...prev, reportesZ: list }) as AppState);
+      });
+      unsubscribes.current.push(unsubZ);
+    };
+
+    // 3. Autenticación
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
       if (!currentUser) {
         router.push('/login');
-      } else {
-        try {
-          // Cargar terminales desde Firestore (colección raíz)
-          const terminales = await loadTerminalsFromFirestore();
-          
-          // Suscribirse a cambios en tiempo real de los terminales
-          const unsubscribeTerminals = onSnapshot(collection(db, 'terminales'), (snapshot) => {
-            const updatedTerminals: Terminal[] = [];
-            snapshot.forEach(doc => {
-              updatedTerminals.push({ id: doc.id, ...doc.data() } as Terminal);
-            });
-            setState(prev => ({ ...prev, terminales: updatedTerminals }) as AppState);
-          });
-
-          // Obtener perfil del usuario
-          const userDocRef = doc(db, 'users', currentUser.uid);
-          const userDocSnap = await getDoc(userDocRef);
-          
-          if (!userDocSnap.exists()) {
-            await signOut(auth);
-            router.push('/login');
-            return;
-          }
-
-          const data = userDocSnap.data();
-          
-          if (data.accesoBloqueado) {
-            await signOut(auth);
-            if (typeof sessionStorage !== 'undefined') sessionStorage.clear();
-            router.push('/login');
-            return;
-          }
-
-          if (!moduleInitialized.current) {
-            const savedModule = sessionStorage.getItem('posven_active_module');
-            const aperturaConfirmada = localStorage.getItem('posven_apertura_done') === 'true';
-
-            if (data.rol === 'cajero') {
-              // Verificar si el usuario tiene un terminal asignado en la colección raíz
-              const hasTerminal = terminales.some((t: Terminal) => t.usuarioId === currentUser.uid);
-              
-              if (!hasTerminal) {
-                await signOut(auth);
-                alert("ACCESO RESTRINGIDO: Su usuario no tiene un terminal asignado.");
-                router.push('/login');
-                return;
-              }
-              
-              const target = savedModule || 'ventas';
-              setActiveTab(target);
-              setShowApertura(!aperturaConfirmada);
-              setLoading(false);
-            } else {
-              const target = savedModule || 'dashboard';
-              setActiveTab(target);
-              setShowApertura(false);
-              setLoading(false);
-            }
-            moduleInitialized.current = true;
-          }
-
-          setUserRole(data.rol);
-          setUserProfile(data);
-          setUser(currentUser);
-          // Guardar terminales en el estado local (ya se actualizarán con el onSnapshot)
-          setState(prev => ({ ...prev, terminales: terminales }) as AppState);
-          
-        } catch (error) {
-          console.error("Auth process error:", error);
-          setLoading(false);
-        }
+        return;
       }
-    });
 
-    const unsubscribeStore = Store.subscribe((dbUpdate: Partial<AppState>) => {
-      setState(prev => ({ ...prev, ...dbUpdate }) as AppState);
+      try {
+        // Obtener perfil del usuario
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        const userDocSnap = await getDoc(userDocRef);
+        
+        if (!userDocSnap.exists()) {
+          await signOut(auth);
+          router.push('/login');
+          return;
+        }
+
+        const data = userDocSnap.data();
+        
+        if (data.accesoBloqueado) {
+          await signOut(auth);
+          if (typeof sessionStorage !== 'undefined') sessionStorage.clear();
+          router.push('/login');
+          return;
+        }
+
+        // 🔑 CARGAR TERMINALES DE FORMA SÍNCRONA antes de verificar
+        let terminal = null;
+        if (data.rol === 'cajero') {
+          const terminalsSnapshot = await getDocs(collection(db, 'terminales'));
+          const terminales = terminalsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Terminal));
+          terminal = terminales.find(t => t.usuarioId === currentUser.uid);
+          
+          if (!terminal) {
+            await signOut(auth);
+            alert("ACCESO RESTRINGIDO: Su usuario no tiene un terminal asignado.");
+            router.push('/login');
+            return;
+          }
+        }
+
+        const terminalId = terminal?.id || 'GLOBAL';
+
+        // Iniciar suscripciones a colecciones
+        setupSubscriptions(terminalId);
+
+        // Configurar estado de usuario
+        setUser(currentUser);
+        setUserRole(data.rol);
+        setUserProfile(data);
+
+        // Actualizar estado con terminales (para que el cajero pueda verlos)
+        if (data.rol === 'cajero' && terminal) {
+          setState(prev => ({ ...prev, terminales: [terminal] }) as AppState);
+        }
+
+        // Verificar apertura de caja si es cajero
+        if (data.rol === 'cajero') {
+          const aperturaConfirmada = localStorage.getItem('posven_apertura_done') === 'true';
+          setShowApertura(!aperturaConfirmada);
+        } else {
+          setShowApertura(false);
+        }
+
+        // Módulo inicial
+        if (!moduleInitialized.current) {
+          const savedModule = sessionStorage.getItem('posven_active_module');
+          const target = data.rol === 'cajero' 
+            ? (savedModule || 'ventas') 
+            : (savedModule || 'dashboard');
+          setActiveTab(target);
+          moduleInitialized.current = true;
+        }
+
+        setLoading(false);
+
+      } catch (error) {
+        console.error("Auth process error:", error);
+        setLoading(false);
+      }
     });
 
     const timerClock = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -191,8 +256,8 @@ export default function LicoreriaPOS() {
       window.addEventListener('offline', hOffline);
       return () => {
         unsubscribeAuth();
-        if (unsubscribeProfile) unsubscribeProfile();
-        unsubscribeStore();
+        unsubConfig();
+        unsubscribes.current.forEach(unsub => unsub());
         clearInterval(timerClock);
         clearTimeout(timerSafety);
         window.removeEventListener('online', hOnline);
@@ -202,8 +267,8 @@ export default function LicoreriaPOS() {
     
     return () => {
       unsubscribeAuth();
-      if (unsubscribeProfile) unsubscribeProfile();
-      unsubscribeStore();
+      unsubConfig();
+      unsubscribes.current.forEach(unsub => unsub());
       clearInterval(timerClock);
       clearTimeout(timerSafety);
     };
@@ -284,6 +349,7 @@ export default function LicoreriaPOS() {
   const updateState = (newState: Partial<AppState>) => {
     setState(prev => {
       const updated = { ...prev, ...newState } as AppState;
+      // Solo guardar configuración en Store (los datos transaccionales van por Collections)
       Store.set(updated);
       return updated;
     });
@@ -433,10 +499,14 @@ export default function LicoreriaPOS() {
                   
                   const currentState = Store.get();
                   const newState: AppState = {
+                    ...initialState,
                     ...currentState,
+                    user: currentState.user || null,
                     fondoCajaHoyBS: bsValue,
                     fondoCajaHoyUSD: usdValue,
-                    isCashOpen: true
+                    isCashOpen: true,
+                    tasa: currentState.tasa || state.tasa || 36.50,
+                    empresa: currentState.empresa || state.empresa || initialState.empresa
                   };
                   Store.set(newState);
                   setState(newState);

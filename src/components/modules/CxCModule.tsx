@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { AppState, Debt, Customer } from '@/lib/types';
-import { Utils, Store } from '@/lib/db-store';
+import { Utils, Store, Collections } from '@/lib/db-store';
 import { 
   Plus, 
   X, 
@@ -226,8 +226,8 @@ export default function CxCModule({ state, updateState }: { state: AppState, upd
     return groups;
   }, [todasLasDeudas, allCustomers, filterEstado]);
 
-  // ===== SINCORNIZAR CLIENTES DESDE CXC =====
-  const syncCustomersFromCxC = () => {
+  // ===== SINCORNIZAR CLIENTES DESDE CXC (usando Collections) =====
+  const syncCustomersFromCxC = async () => {
     const clientesExistentes = new Map(allCustomers.map(c => [getRawCedula(c.cedula), c]));
     const clientesFromCxC: Map<string, { name: string, cedula: string }> = new Map();
     
@@ -249,18 +249,20 @@ export default function CxCModule({ state, updateState }: { state: AppState, upd
 
     const nuevosClientes: Customer[] = [];
     clientesFromCxC.forEach((data, raw) => {
-      nuevosClientes.push({
+      const nuevoCliente: Customer = {
         id: `CUS-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
         name: data.name,
         cedula: data.cedula,
         address: 'Sin dirección',
         phone: 'Sin teléfono',
         debt: 0
-      });
+      };
+      nuevosClientes.push(nuevoCliente);
+      // Guardar en Firestore
+      Collections.set('clientes', nuevoCliente.id, nuevoCliente);
     });
 
     if (nuevosClientes.length > 0) {
-      updateState({ clientes: [...allCustomers, ...nuevosClientes] });
       toast({ 
         title: "Clientes sincronizados", 
         description: `Se agregaron ${nuevosClientes.length} clientes desde las deudas.` 
@@ -277,9 +279,8 @@ export default function CxCModule({ state, updateState }: { state: AppState, upd
     syncCustomersFromCxC();
   }, []);
 
-  // ===== CORREGIDO: ELIMINAR CLIENTE Y TODAS SUS DEUDAS =====
-  const eliminarCliente = (clientName: string) => {
-    // Buscar el cliente por nombre para obtener su cédula
+  // ===== ELIMINAR CLIENTE Y TODAS SUS DEUDAS (con Collections) =====
+  const eliminarCliente = async (clientName: string) => {
     const cliente = allCustomers.find(c => c.name === clientName);
     if (!cliente) {
       toast({ 
@@ -292,7 +293,6 @@ export default function CxCModule({ state, updateState }: { state: AppState, upd
 
     const rawCedula = getRawCedula(cliente.cedula);
 
-    // Verificar si tiene deudas pendientes
     const deudasPendientes = findDebtsByCedula(todasLasDeudas, rawCedula).filter(d => d.estado !== 'pagada');
     
     if (deudasPendientes.length > 0) {
@@ -313,23 +313,21 @@ export default function CxCModule({ state, updateState }: { state: AppState, upd
 
     if (!confirm(mensajeConfirmacion)) return;
 
-    // Eliminar cliente de allCustomers
-    const clientesActualizados = allCustomers.filter((c: Customer) => c.id !== cliente.id);
+    // Eliminar cliente de Firestore
+    await Collections.delete('clientes', cliente.id);
     
-    // Eliminar TODAS las deudas de este cliente (usando la cédula raw)
-    const deudasActualizadas = todasLasDeudas.filter((d: Debt) => {
+    // Eliminar TODAS las deudas de este cliente
+    const deudasAEliminar = todasLasDeudas.filter((d: Debt) => {
       const match = d.cliente?.match(/^(.*?)\s*\[(.*?)\]$/);
       if (match) {
-        return getRawCedula(match[2]) !== rawCedula;
+        return getRawCedula(match[2]) === rawCedula;
       }
-      // Si la deuda no tiene formato con cédula, comparar por nombre
-      return d.cliente !== clientName && d.cliente !== `${clientName} [${cliente.cedula}]`;
+      return d.cliente === clientName || d.cliente === `${clientName} [${cliente.cedula}]`;
     });
 
-    updateState({ 
-      clientes: clientesActualizados, 
-      cxc: deudasActualizadas 
-    });
+    for (const deuda of deudasAEliminar) {
+      await Collections.delete('cxc', deuda.id);
+    }
     
     toast({ 
       title: "Cliente eliminado", 
@@ -337,8 +335,8 @@ export default function CxCModule({ state, updateState }: { state: AppState, upd
     });
   };
 
-  // ===== GUARDAR DEUDA DIRECTA =====
-  const guardarDeudaDirecta = () => {
+  // ===== GUARDAR DEUDA DIRECTA (con Collections) =====
+  const guardarDeudaDirecta = async () => {
     if (!nuevaDeuda.cliente || !nuevaDeuda.cedula || nuevaDeuda.montoUSD <= 0) {
       alert('Por favor ingrese el cliente, su cédula y un monto válido.');
       return;
@@ -365,8 +363,7 @@ export default function CxCModule({ state, updateState }: { state: AppState, upd
             phone: 'Sin teléfono',
             debt: 0
           };
-          const updatedCustomers = [...allCustomers, cliente];
-          updateState({ clientes: updatedCustomers });
+          await Collections.set('clientes', cliente.id, cliente);
         }
       }
     }
@@ -380,13 +377,13 @@ export default function CxCModule({ state, updateState }: { state: AppState, upd
         phone: 'Sin teléfono',
         debt: nuevaDeuda.montoUSD
       };
-      const updatedCustomers = [...allCustomers, cliente];
-      updateState({ clientes: updatedCustomers });
+      await Collections.set('clientes', cliente.id, cliente);
     } else {
-      const updatedCustomers = allCustomers.map((c: Customer) => 
-        c.id === cliente!.id ? { ...c, debt: (c.debt || 0) + nuevaDeuda.montoUSD } : c
-      );
-      updateState({ clientes: updatedCustomers });
+      const clienteActualizado = { 
+        ...cliente, 
+        debt: (cliente.debt || 0) + nuevaDeuda.montoUSD 
+      };
+      await Collections.set('clientes', cliente.id, clienteActualizado);
     }
 
     const nombreCliente = cliente.name;
@@ -404,7 +401,9 @@ export default function CxCModule({ state, updateState }: { state: AppState, upd
       estado: 'pendiente' as 'pendiente',
       historialPagos: []
     };
-    updateState({ cxc: [...state.cxc, nuevaEntrada] });
+    
+    await Collections.set('cxc', nuevaEntrada.id, nuevaEntrada);
+    
     setShowModal(false);
     setNuevaDeuda({ cliente: '', tipoDoc: 'V', cedula: '', montoUSD: 0, fecha: Utils.hoy(), vencimiento: Utils.hoy(), sinVencimiento: false });
     
@@ -414,18 +413,25 @@ export default function CxCModule({ state, updateState }: { state: AppState, upd
     });
   };
 
-  const eliminarDeuda = (deuda: any) => {
+  const eliminarDeuda = async (deuda: any) => {
     if (!confirm(`¿Seguro que desea eliminar el registro ${deuda.id}? Esta acción no se puede deshacer.`)) return;
-    const nuevas = state.cxc.filter((x: Debt) => x.id !== deuda.id);
     
-    const clientesActualizados = allCustomers.map((c: Customer) => {
-      if (c.name === deuda.cliente || c.cedula === deuda.cliente) {
-        return { ...c, debt: Math.max(0, (c.debt || 0) - deuda.saldoUSD) };
+    // Eliminar deuda de Firestore
+    await Collections.delete('cxc', deuda.id);
+    
+    // Actualizar cliente si existe
+    const match = deuda.cliente?.match(/^(.*?)\s*\[(.*?)\]$/);
+    if (match) {
+      const raw = getRawCedula(match[2]);
+      const cliente = findCustomerByCedula(allCustomers, match[2]);
+      if (cliente) {
+        const clienteActualizado = { 
+          ...cliente, 
+          debt: Math.max(0, (cliente.debt || 0) - deuda.saldoUSD) 
+        };
+        await Collections.set('clientes', cliente.id, clienteActualizado);
       }
-      return c;
-    });
-    
-    updateState({ cxc: nuevas, clientes: clientesActualizados });
+    }
   };
 
   const handleExportPDF = () => {

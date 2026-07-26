@@ -13,9 +13,8 @@ import {
   signOut 
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, collection, getDocs } from 'firebase/firestore';
-// ✅ CORREGIDO: Usar ruta relativa en lugar de @/hooks/use-toast
 import { toast } from '../../hooks/use-toast';
-import { Store } from '@/lib/db-store';
+import { Store, initialState } from '@/lib/db-store';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -42,13 +41,12 @@ export default function LoginPage() {
         
         if (userSnapshot.empty) {
           setIsRegistering(true);
-          // CORRECCIÓN: Pre-establecer el rol a 'administrador' si el sistema está vacío
           setRole('administrador');
         }
 
       } catch (e) {
         console.warn("Error chequeando estado del sistema:", e);
-        setSystemEmpty(false); // Asumir que no está vacío si hay error
+        setSystemEmpty(false);
       }
     };
 
@@ -95,7 +93,6 @@ export default function LoginPage() {
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // Lógica para usuario de emergencia
     if (systemEmpty && !isRegistering) {
         setLoading(true);
         toast({
@@ -139,14 +136,53 @@ export default function LoginPage() {
         const newUserData = {
           email: user.email!.toLowerCase(),
           nombre: email.split('@')[0].toUpperCase(),
-          rol: role, // El rol ya estará seteado a 'administrador' si el sistema está vacío
+          rol: role,
           uid: user.uid,
           fechaCreacion: new Date().toISOString(),
           accesoBloqueado: false
         };
         await setDoc(doc(db, 'users', user.uid), newUserData);
 
+        // 🔑 SI ES EL PRIMER USUARIO, CREAR CONFIGURACIÓN GLOBAL
         if (systemEmpty) {
+            // Crear config/global con valores iniciales
+            const configRef = doc(db, 'config', 'global');
+            await setDoc(configRef, {
+              tasa: initialState.tasa,
+              comisionEfectivo: initialState.comisionEfectivo,
+              pinDevolucion: initialState.pinDevolucion,
+              isInitialized: true,
+              empresa: initialState.empresa,
+              departamentos: initialState.departamentos,
+              categorias: initialState.categorias,
+              marcas: initialState.marcas,
+              presentaciones: initialState.presentaciones,
+              proveedores: [],
+              ultimoZ: 0,
+              proximoRecibo: 1,
+              proximaDevolucion: 1,
+              proximaAnulacion: 1,
+              acumuladoHistorico: 0,
+              fechaUltimoZ: '',
+              fondoCajaHoyUSD: 0,
+              fondoCajaHoyBS: 0,
+              isCashOpen: false,
+              cashData: null,
+              cashHistory: [],
+              config: initialState.config,
+              productCategories: initialState.productCategories,
+              productUnits: initialState.productUnits,
+              productColors: initialState.productColors,
+              productSizes: initialState.productSizes,
+              brands: [],
+              groups: [],
+              subgroups: [],
+              lines: [],
+              suppliers: [],
+              marcasString: ['Genérica'],
+              proveedoresString: [],
+            });
+            
             setSystemEmpty(false);
             setIsRegistering(false);
             toast({ 
@@ -154,7 +190,7 @@ export default function LoginPage() {
               description: "El sistema está listo. Por favor, inicie sesión.",
               variant: "default"
             });
-            await signOut(auth); // Desloguear para forzar login con el nuevo usuario
+            await signOut(auth);
         } else {
             toast({ title: "Usuario Creado", description: `El usuario ${user.email} fue creado.` });
         }

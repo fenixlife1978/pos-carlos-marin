@@ -29,6 +29,10 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
   const state = Store.get();
   const printRef = useRef<HTMLDivElement>(null);
 
+  // 🔑 Valores por defecto para evitar undefined
+  const tasa = state.tasa || 36.50;
+  const empresa = state.empresa || { nombre: 'NEGOCIO', rif: 'J-00000000-0', direccion: 'DIRECCIÓN', telefono: '0000-0000000' };
+
   const isReport = type === 'REPORT_X' || type === 'REPORT_Z';
   const data = isReport ? reportData : saleData;
   
@@ -127,17 +131,17 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
     if (data.totalBS) return data.totalBS;
     if (data.totalBs) return data.totalBs;
     if (data.total) return data.total;
-    if (data.ventaNetaUSD) return data.ventaNetaUSD * state.tasa;
+    if (data.ventaNetaUSD) return data.ventaNetaUSD * tasa;
     return 0;
-  }, [data.totalBS, data.totalBs, data.total, data.ventaNetaUSD, state.tasa]);
+  }, [data.totalBS, data.totalBs, data.total, data.ventaNetaUSD, tasa]);
 
   const totalUsd = React.useMemo(() => {
     if (data.totalUSD) return data.totalUSD;
     if (data.totalUsd) return data.totalUsd;
-    if (data.total) return data.total / (state.tasa || 1);
+    if (data.total) return data.total / (tasa || 1);
     if (data.ventaNetaUSD) return data.ventaNetaUSD;
     return 0;
-  }, [data.totalUSD, data.totalUsd, data.total, data.ventaNetaUSD, state.tasa]);
+  }, [data.totalUSD, data.totalUsd, data.total, data.ventaNetaUSD, tasa]);
 
   // ===== FUNCIÓN PARA OBTENER MÉTODOS DE PAGO =====
   const getPaymentMethods = () => {
@@ -310,9 +314,9 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
             >
               {/* ENCABEZADO */}
               <div className="text-center pb-1">
-                <div className="text-[18px] font-bold uppercase leading-tight">{state.empresa.nombre}</div>
-                {state.empresa.rif && <div className="font-bold">RIF: {state.empresa.rif}</div>}
-                {state.empresa.direccion && <div className="text-[10px] uppercase">{state.empresa.direccion}</div>}
+                <div className="text-[18px] font-bold uppercase leading-tight">{empresa.nombre}</div>
+                {empresa.rif && <div className="font-bold">RIF: {empresa.rif}</div>}
+                {empresa.direccion && <div className="text-[10px] uppercase">{empresa.direccion}</div>}
               </div>
 
               <div className="text-center mt-2">
@@ -358,20 +362,20 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
                    <div className="text-center font-bold">RESUMEN DE OPERACIONES</div>
                    <div className="separator-dashed"></div>
                    <table><tbody>
-                     <tr><td>VENTAS BRUTAS:</td><td className="text-right">{formatBs(data.brUSD * state.tasa)}</td></tr>
-                     <tr><td>DESCUENTOS:</td><td className="text-right">{formatBs(data.descUSD * state.tasa)}</td></tr>
-                     <tr><td>DEVOLUCIONES:</td><td className="text-right">{formatBs(data.devUSD * state.tasa)}</td></tr>
-                     <tr><td className="bold">VENTAS NETAS:</td><td className="text-right bold">{formatBs(data.netUSD * state.tasa)}</td></tr>
+                     <tr><td>VENTAS BRUTAS:</td><td className="text-right">{formatBs((data.brUSD || 0) * tasa)}</td></tr>
+                     <tr><td>DESCUENTOS:</td><td className="text-right">{formatBs((data.descUSD || 0) * tasa)}</td></tr>
+                     <tr><td>DEVOLUCIONES:</td><td className="text-right">{formatBs((data.devUSD || 0) * tasa)}</td></tr>
+                     <tr><td className="bold">VENTAS NETAS:</td><td className="text-right bold">{formatBs((data.netUSD || 0) * tasa)}</td></tr>
                    </tbody></table>
 
                    <div className="separator-dashed"></div>
                    <div className="text-center font-bold">DESGLOSE DE IMPUESTOS</div>
                    <div className="separator-dashed"></div>
                    <table><tbody>
-                     <tr><td>VENTAS EXENTAS (E):</td><td className="text-right">{formatBs(data.exentoUSD * state.tasa)}</td></tr>
-                     <tr><td>BASE IMPONIBLE (G 16%):</td><td className="text-right">{formatBs(data.baseImponibleUSD * state.tasa)}</td></tr>
-                     <tr><td>IVA RECAUDADO (16%):</td><td className="text-right">{formatBs(data.ivaUSD * state.tasa)}</td></tr>
-                     <tr><td>RECAUDACIÓN IGTF (3%):</td><td className="text-right">{formatBs(data.igtfUSD * state.tasa)}</td></tr>
+                     <tr><td>VENTAS EXENTAS (E):</td><td className="text-right">{formatBs((data.exentoUSD || 0) * tasa)}</td></tr>
+                     <tr><td>BASE IMPONIBLE (G 16%):</td><td className="text-right">{formatBs((data.baseImponibleUSD || 0) * tasa)}</td></tr>
+                     <tr><td>IVA RECAUDADO (16%):</td><td className="text-right">{formatBs((data.ivaUSD || 0) * tasa)}</td></tr>
+                     <tr><td>RECAUDACIÓN IGTF (3%):</td><td className="text-right">{formatBs((data.igtfUSD || 0) * tasa)}</td></tr>
                    </tbody></table>
 
                    <div className="separator-dashed"></div>
@@ -388,7 +392,7 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
                            return paymentMethods.map((p: any, idx: number) => {
                              const method = p.metodo || p.method || 'efectivo';
                              const amountUSD = p.montoUSD || p.amountUSD || p.monto || p.amount || 0;
-                             const amountBS = p.montoBS || p.amountBS || (amountUSD * state.tasa) || 0;
+                             const amountBS = p.montoBS || p.amountBS || (amountUSD * tasa) || 0;
                              const isUsd = isUsdPayment(method);
                              
                              return (
@@ -402,7 +406,7 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
                            return Object.entries(paymentMethods).map(([method, amount], idx) => {
                              const amountNum = typeof amount === 'number' ? amount : 0;
                              const amountUSD = amountNum;
-                             const amountBS = amountNum * state.tasa;
+                             const amountBS = amountNum * tasa;
                              const isUsd = isUsdPayment(method);
                              
                              return (
@@ -420,7 +424,7 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
 
                    <div className="separator-dashed"></div>
 
-                   {/* ===== VENTA DE EFECTIVO - CORREGIDO CON FALLBACK ===== */}
+                   {/* ===== VENTA DE EFECTIVO ===== */}
                    {data.ventaEfectivo && (
                      <>
                        <div className="text-center font-bold text-[11px]">VENTA DE EFECTIVO</div>
@@ -447,14 +451,13 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
                      </>
                    )}
 
-                   {/* ===== MOVIMIENTO DE CAJA - CORREGIDO (SALIDAS SEPARADAS POR MONEDA) ===== */}
+                   {/* ===== MOVIMIENTO DE CAJA ===== */}
                    <div className="text-center font-bold">MOVIMIENTO DE CAJA</div>
                    <div className="separator-dashed"></div>
                    {(() => {
                      const fondoBs = data.fondoAperturaBS || data.fondoAperturaBs || 0;
                      const fondoUsd = data.fondoAperturaUSD || data.fondoAperturaUsd || 0;
                      
-                     // Calcular ventas en efectivo desde los métodos de pago
                      let ventasEfectivoBs = 0;
                      let ventasEfectivoUsd = 0;
                      const paymentMethods = getPaymentMethods();
@@ -464,7 +467,7 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
                          paymentMethods.forEach((p: any) => {
                            const method = p.metodo || p.method || 'efectivo';
                            const amountUSD = p.montoUSD || p.amountUSD || p.monto || p.amount || 0;
-                           const amountBS = p.montoBS || p.amountBS || (amountUSD * state.tasa) || 0;
+                           const amountBS = p.montoBS || p.amountBS || (amountUSD * tasa) || 0;
                            const isUsd = isUsdPayment(method);
                            
                            if (method === 'efectivo_bs' || (method === 'efectivo' && !isUsd)) {
@@ -477,7 +480,7 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
                          Object.entries(paymentMethods).forEach(([method, amount]) => {
                            const amountNum = typeof amount === 'number' ? amount : 0;
                            const amountUSD = amountNum;
-                           const amountBS = amountNum * state.tasa;
+                           const amountBS = amountNum * tasa;
                            const isUsd = isUsdPayment(method);
                            
                            if (method === 'efectivo_bs' || (method === 'efectivo' && !isUsd)) {
@@ -489,14 +492,12 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
                        }
                      }
                      
-                     // ===== COBROS DE DEUDA EN EFECTIVO =====
                      const cobrosDeudaBs = data.cobrosDeudaBs || data.cobrosDeudaBS || 0;
                      const cobrosDeudaUsd = data.cobrosDeudaUsd || data.cobrosDeudaUSD || 0;
                      
                      const totalVentasEfectivoBs = ventasEfectivoBs + cobrosDeudaBs;
                      const totalVentasEfectivoUsd = ventasEfectivoUsd + cobrosDeudaUsd;
 
-                     // ===== SALIDAS DE EFECTIVO - SEPARADAS POR MONEDA =====
                      const salidasCajaUSD = data.manualSalidasUSD || data.salidasCajaUSD || 0;
                      const salidasCajaBS = data.manualSalidasBS || data.salidasCajaBS || 0;
                      
@@ -544,7 +545,7 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
                         <div className="text-center font-bold">TOTALES HISTÓRICOS</div>
                         <div className="text-center text-[10px]">(ACUMULADO NO REINICIABLE)</div>
                         <table><tbody>
-                          <tr><td>GRAN TOTAL VENTAS:</td><td className="text-right">{formatBs(data.acumuladoHistoricoUSD * state.tasa)}</td></tr>
+                          <tr><td>GRAN TOTAL VENTAS:</td><td className="text-right">{formatBs((data.acumuladoHistoricoUSD || 0) * tasa)}</td></tr>
                         </tbody></table>
                         <div className="separator-solid"></div>
                         <div className="text-center font-bold">CIERRE DE JORNADA EXITOSO</div>
@@ -590,7 +591,7 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
                            return (
                              <tr key={i}>
                                <td>{Utils.metodoLabel(p.metodo).toUpperCase()}:</td>
-                               <td className="text-right">{isUsd ? `$ ${formatUsd(amount).replace('$','')}` : formatBs(p.montoBS || (amount * state.tasa))}</td>
+                               <td className="text-right">{isUsd ? `$ ${formatUsd(amount).replace('$','')}` : formatBs(p.montoBS || (amount * tasa))}</td>
                              </tr>
                            );
                          }) : (
@@ -600,7 +601,7 @@ export function ReceiptModal({ isOpen, onClose, saleData, reportData, type = 'SA
                            </tr>
                          )}
                          {data.change > 0 && <tr><td>SU VUELTO Bs.:</td><td className="text-right">{formatBs(data.change)}</td></tr>}
-                         <tr><td colSpan={2} className="text-center text-[9px] mt-1">(Tasa Ref: {state.tasa.toFixed(2)} Bs/USD)</td></tr>
+                         <tr><td colSpan={2} className="text-center text-[9px] mt-1">(Tasa Ref: {tasa.toFixed(2)} Bs/USD)</td></tr>
                        </tbody></table>
                      );
                    })()}

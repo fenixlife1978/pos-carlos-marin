@@ -140,14 +140,16 @@ export default function GlobalControlModule({ state, updateState }: { state: App
       nombre: newTerminalName.toUpperCase(),
       usuarioId: null,
       activo: true,
-      proximoRecibo: 1
+      proximoRecibo: 1,
+      // 🔑 NUEVOS CONTADORES INDEPENDIENTES POR TERMINAL
+      proximaDevolucion: 1,
+      proximaAnulacion: 1,
+      proximaVentaEfectivo: 1,
     };
 
     try {
       // Guardar en Firestore en la colección raíz "terminales"
       await setDoc(doc(db, 'terminales', newTerm.id), newTerm);
-      // Actualizar estado local (opcional, porque onSnapshot actualizará automáticamente)
-      // updateState({ terminales: [...(state.terminales || []), newTerm] });
       toast({ title: "Terminal Creado", description: `ID: ${newTerm.id}` });
     } catch (error) {
       console.error("Error creando terminal:", error);
@@ -162,7 +164,6 @@ export default function GlobalControlModule({ state, updateState }: { state: App
     if (!confirm('¿Eliminar este terminal?')) return;
     try {
       await deleteDoc(doc(db, 'terminales', id));
-      // El estado se actualizará automáticamente por onSnapshot
       toast({ title: "Terminal Eliminado" });
     } catch (error) {
       console.error("Error eliminando terminal:", error);

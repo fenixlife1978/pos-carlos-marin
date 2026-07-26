@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { AppState, LibroDiarioEntry, PaymentMethod } from '@/lib/types';
-import { Utils, Store } from '@/lib/db-store';
+import { Utils, Store, Collections } from '@/lib/db-store';
 import { 
   BookOpen, 
   ArrowUpCircle, 
@@ -91,7 +91,7 @@ export default function AccountingModule({ state, updateState }: { state: AppSta
     return filteredDiario.slice(start, start + pageSize);
   }, [filteredDiario, page]);
 
-  const handleSaveExpense = () => {
+  const handleSaveExpense = async () => {
     if (!formData.concepto || !formData.montoUSD) return alert('Datos incompletos');
     const mUSD = parseFloat(formData.montoUSD) || 0;
     
@@ -107,14 +107,14 @@ export default function AccountingModule({ state, updateState }: { state: AppSta
       referencia: 'MANUAL'
     };
 
-    updateState({ libroDiario: [entry, ...(state.libroDiario || [])] });
+    await Collections.set('libroDiario', entry.id, entry);
     setShowModal(false);
     setFormData({ concepto: '', montoUSD: '', categoria: 'NOMINA', metodo: 'efectivo_usd' });
   };
 
-  const eliminarAsiento = (id: string) => {
+  const eliminarAsiento = async (id: string) => {
     if (!confirm('¿Seguro que desea eliminar este asiento manual?')) return;
-    updateState({ libroDiario: (state.libroDiario || []).filter(e => e.id !== id) });
+    await Collections.delete('libroDiario', id);
   };
 
   const handleExport = () => {
@@ -215,8 +215,8 @@ export default function AccountingModule({ state, updateState }: { state: AppSta
               {paginatedData.length === 0 ? (
                 <tr><td colSpan={6} className="text-center py-24 text-ink/20 font-black italic uppercase">Sin movimientos en este periodo</td></tr>
               ) : (
-                paginatedData.map(e => (
-                  <tr key={e.id} className="border-b border-line/30 hover:bg-surface-warm/20 transition-colors">
+                paginatedData.map((e, index) => (
+                  <tr key={`${e.id}-${index}`} className="border-b border-line/30 hover:bg-surface-warm/20 transition-colors">
                     <td className="py-4 px-6 text-[11px] font-bold text-ink">
                       {Utils.fmtFecha(e.fecha)} <span className="opacity-40">{e.fecha.includes('T') ? e.fecha.split('T')[1].slice(0, 5) : ''}</span>
                     </td>

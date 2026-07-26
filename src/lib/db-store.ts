@@ -2,17 +2,31 @@
 
 import { AppState } from './types';
 import { db } from './firebase';
-import { doc, setDoc, onSnapshot } from "firebase/firestore";
+import { 
+  doc, 
+  setDoc, 
+  onSnapshot, 
+  collection, 
+  query, 
+  where, 
+  limit, 
+  getDocs, 
+  updateDoc, 
+  deleteDoc,
+  CollectionReference,
+  Query,
+  DocumentData
+} from "firebase/firestore";
 
-const STORAGE_KEY = 'posven_pro_session_data_cache';
-const COLLECTION = 'pos_system_data';
-const DOC_ID = 'state';
+const STORAGE_KEY = 'posven_pro_config_cache';
+const CONFIG_COLLECTION = 'config';
+const CONFIG_DOC = 'global';
 
 export const initialState: AppState = {
   user: null,
   isAuthenticated: false,
   tasa: 36.50,
-  comisionEfectivo: 5, // <--- AGREGADA
+  comisionEfectivo: 5,
   pinDevolucion: '000000',
   isInitialized: false,
   productos: [],
@@ -36,7 +50,6 @@ export const initialState: AppState = {
   fondoCajaHoyUSD: 0,
   fondoCajaHoyBS: 0,
   
-  // ========== PROPIEDADES PARA CASH MODULE ==========
   isCashOpen: false,
   cashData: null,
   cashHistory: [],
@@ -47,148 +60,269 @@ export const initialState: AppState = {
     direccion: 'DIRECCIÓN FISCAL', 
     telefono: '0000-0000000' 
   },
-  // DEPARTAMENTOS Y CATEGORÍAS EXISTENTES
   departamentos: ['Licores', 'Viveres', 'Otros'],
   categorias: ['Ron', 'Vino', 'Cerveza', 'Whisky', 'Refrescos', 'Otros'],
   marcas: ['Genérica'],
   presentaciones: ['750ml', '1L', 'Unidad', 'Caja'],
   proveedores: [],
   
-  // ========== NUEVAS PROPIEDADES PARA ProductForm ==========
-  // Configuración general
   config: {
     exchangeRate: 36.50,
     ivaRate: 16,
     igtfRate: 3
   },
   
-  // Listas para el formulario de productos
   productCategories: ['Repuesto', 'Lubricante', 'Filtro', 'Químico', 'Accesorio', 'Batería', 'Caucho', 'Freno', 'Suspensión', 'Motor', 'Eléctrico', 'Transmisión', 'Servicio'],
   productUnits: ['unidad', 'litro', 'galón', 'cuarto', 'paila', 'kit', 'juego', 'par', 'metro', 'kilogramo', 'gramo', 'tambor'],
   productColors: ['No Aplica', 'Negro', 'Gris', 'Cromo', 'Rojo', 'Azul', 'Blanco', 'Ámbar'],
   productSizes: ['N/A', 'Estándar', '0.10', '0.20', '0.30', '0.40', '0.50', '20', '30', '40', '50', '60'],
   
-  // Colecciones para el formulario (con estructura de objetos con id)
-  brands: [], // { id: 1, name: 'Toyota' }
-  groups: [], // { id: 1, name: 'Tren Delantero' }
-  subgroups: [], // { id: 1, name: 'Amortiguadores', groupId: 1 }
-  lines: [], // { id: 1, name: 'Línea Pesada' }
-  suppliers: [], // { id: 1, name: 'Proveedor XYZ', code: 'RIF-123' }
-  
-  // Para compatibilidad con código existente que usa arrays de strings
-  // Estos se mantienen pero ahora también tenemos las versiones con objetos
+  brands: [],
+  groups: [],
+  subgroups: [],
+  lines: [],
+  suppliers: [],
+  products: [],
   marcasString: ['Genérica'],
   proveedoresString: [],
-  
-  // Para almacenar los productos con estructura completa
-  products: [],
 };
 
+// ============================================================
+// STORE: Solo maneja CONFIGURACIÓN (no datos transaccionales)
+// ============================================================
 export const Store = {
   subscribe(callback: (state: Partial<AppState>) => void) {
     if (typeof window === 'undefined' || !db) return () => {};
 
-    const docRef = doc(db, COLLECTION, DOC_ID);
+    const docRef = doc(db, CONFIG_COLLECTION, CONFIG_DOC);
     
     return onSnapshot(docRef, (snapshot) => {
       if (snapshot.exists()) {
         const val = snapshot.data();
-        const merged = { ...initialState, ...val };
-        delete (merged as any).carrito; 
-        callback(merged);
-        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+        // Solo mezclamos la configuración, no los arrays de datos
+        const configData = {
+          tasa: val.tasa ?? initialState.tasa,
+          comisionEfectivo: val.comisionEfectivo ?? initialState.comisionEfectivo,
+          pinDevolucion: val.pinDevolucion ?? initialState.pinDevolucion,
+          isInitialized: val.isInitialized ?? false,
+          empresa: val.empresa ?? initialState.empresa,
+          departamentos: val.departamentos ?? initialState.departamentos,
+          categorias: val.categorias ?? initialState.categorias,
+          marcas: val.marcas ?? initialState.marcas,
+          presentaciones: val.presentaciones ?? initialState.presentaciones,
+          proveedores: val.proveedores ?? initialState.proveedores,
+          ultimoZ: val.ultimoZ ?? 0,
+          proximoRecibo: val.proximoRecibo ?? 1,
+          proximaDevolucion: val.proximaDevolucion ?? 1,
+          proximaAnulacion: val.proximaAnulacion ?? 1,
+          acumuladoHistorico: val.acumuladoHistorico ?? 0,
+          fechaUltimoZ: val.fechaUltimoZ ?? '',
+          fondoCajaHoyUSD: val.fondoCajaHoyUSD ?? 0,
+          fondoCajaHoyBS: val.fondoCajaHoyBS ?? 0,
+          isCashOpen: val.isCashOpen ?? false,
+          cashData: val.cashData ?? null,
+          cashHistory: val.cashHistory ?? [],
+          config: val.config ?? initialState.config,
+          productCategories: val.productCategories ?? initialState.productCategories,
+          productUnits: val.productUnits ?? initialState.productUnits,
+          productColors: val.productColors ?? initialState.productColors,
+          productSizes: val.productSizes ?? initialState.productSizes,
+          brands: val.brands ?? [],
+          groups: val.groups ?? [],
+          subgroups: val.subgroups ?? [],
+          lines: val.lines ?? [],
+          suppliers: val.suppliers ?? [],
+          marcasString: val.marcasString ?? ['Genérica'],
+          proveedoresString: val.proveedoresString ?? [],
+        };
+        callback(configData);
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(configData));
       } else {
         const local = Store.get();
         callback(local);
-        
-        const { carrito, ...toPersist } = initialState;
-        if (db) setDoc(docRef, toPersist).catch(e => console.error("Error init firestore:", e));
+        // Si no existe, crear con valores por defecto (solo configuración)
+        const toPersist = {
+          tasa: initialState.tasa,
+          comisionEfectivo: initialState.comisionEfectivo,
+          pinDevolucion: initialState.pinDevolucion,
+          isInitialized: false,
+          empresa: initialState.empresa,
+          departamentos: initialState.departamentos,
+          categorias: initialState.categorias,
+          marcas: initialState.marcas,
+          presentaciones: initialState.presentaciones,
+          proveedores: initialState.proveedores,
+          ultimoZ: 0,
+          proximoRecibo: 1,
+          proximaDevolucion: 1,
+          proximaAnulacion: 1,
+          acumuladoHistorico: 0,
+          fechaUltimoZ: '',
+          fondoCajaHoyUSD: 0,
+          fondoCajaHoyBS: 0,
+          isCashOpen: false,
+          cashData: null,
+          cashHistory: [],
+          config: initialState.config,
+          productCategories: initialState.productCategories,
+          productUnits: initialState.productUnits,
+          productColors: initialState.productColors,
+          productSizes: initialState.productSizes,
+          brands: [],
+          groups: [],
+          subgroups: [],
+          lines: [],
+          suppliers: [],
+          marcasString: ['Genérica'],
+          proveedoresString: [],
+        };
+        if (db) setDoc(doc(db, CONFIG_COLLECTION, CONFIG_DOC), toPersist).catch(e => console.error("Error init config:", e));
       }
     }, (error) => {
       if (error.code !== 'permission-denied') {
-        console.warn("Firestore Sync Warning:", error);
+        console.warn("Config Sync Warning:", error);
       }
       callback(Store.get());
     });
   },
 
-  get(): AppState {
-    if (typeof window === 'undefined') return initialState;
+  get(): Partial<AppState> {
+    if (typeof window === 'undefined') return { ...initialState };
     const d = sessionStorage.getItem(STORAGE_KEY);
-    if (!d) return initialState;
+    if (!d) return { ...initialState };
     try {
       const parsed = JSON.parse(d);
       return { ...initialState, ...parsed };
     } catch {
-      return initialState;
+      return { ...initialState };
     }
   },
 
-  async set(state: AppState) {
+  async set(state: Partial<AppState>) {
     if (typeof window === 'undefined') return;
     
+    // 🔑 FILTRAR CAMPOS UNDEFINED para evitar errores en Firestore
+    const filteredState = Object.fromEntries(
+      Object.entries(state).filter(([_, v]) => v !== undefined)
+    );
+    
+    // 🔑 Merge con initialState (siempre valores por defecto)
     const dataToPersist = {
-      tasa: state.tasa,
-      comisionEfectivo: state.comisionEfectivo, // <--- AGREGADO
-      pinDevolucion: state.pinDevolucion,
-      isInitialized: state.isInitialized ?? true,
-      productos: state.productos || [],
-      ventas: state.ventas || [],
-      cxc: state.cxc || [],
-      cxp: state.cxp || [],
-      clientes: state.clientes || [],
-      devoluciones: state.devoluciones || [],
-      anulaciones: state.anulaciones || [],
-      movimientos: state.movimientos || [],
-      libroDiario: state.libroDiario || [],
-      terminales: state.terminales || [],
-      empresa: state.empresa,
-      departamentos: state.departamentos,
-      categorias: state.categorias,
-      marcas: state.marcas,
-      presentaciones: state.presentaciones,
-      proveedores: state.proveedores,
-      reportesZ: state.reportesZ || [],
-      ultimoZ: state.ultimoZ || 0,
-      proximoRecibo: state.proximoRecibo || 1,
-      proximaDevolucion: state.proximaDevolucion || 1,
-      proximaAnulacion: state.proximaAnulacion || 1,
-      acumuladoHistorico: state.acumuladoHistorico || 0,
-      fechaUltimoZ: state.fechaUltimoZ || '',
-      fondoCajaHoyUSD: state.fondoCajaHoyUSD || 0,
-      fondoCajaHoyBS: state.fondoCajaHoyBS || 0,
-      
-      // ========== PROPIEDADES PARA CASH MODULE ==========
-      isCashOpen: state.isCashOpen || false,
-      cashData: state.cashData || null,
-      cashHistory: state.cashHistory || [],
-      
-      // ========== NUEVAS PROPIEDADES PARA ProductForm ==========
-      config: state.config || initialState.config,
-      productCategories: state.productCategories || initialState.productCategories,
-      productUnits: state.productUnits || initialState.productUnits,
-      productColors: state.productColors || initialState.productColors,
-      productSizes: state.productSizes || initialState.productSizes,
-      brands: state.brands || [],
-      groups: state.groups || [],
-      subgroups: state.subgroups || [],
-      lines: state.lines || [],
-      suppliers: state.suppliers || [],
-      products: state.products || [],
-      marcasString: state.marcasString || state.marcas || [],
-      proveedoresString: state.proveedoresString || state.proveedores || [],
+      tasa: initialState.tasa,
+      comisionEfectivo: initialState.comisionEfectivo,
+      pinDevolucion: initialState.pinDevolucion,
+      isInitialized: initialState.isInitialized ?? true,
+      empresa: initialState.empresa,
+      departamentos: initialState.departamentos,
+      categorias: initialState.categorias,
+      marcas: initialState.marcas,
+      presentaciones: initialState.presentaciones,
+      proveedores: initialState.proveedores,
+      ultimoZ: 0,
+      proximoRecibo: 1,
+      proximaDevolucion: 1,
+      proximaAnulacion: 1,
+      acumuladoHistorico: 0,
+      fechaUltimoZ: '',
+      fondoCajaHoyUSD: 0,
+      fondoCajaHoyBS: 0,
+      isCashOpen: false,
+      cashData: null,
+      cashHistory: [],
+      config: initialState.config,
+      productCategories: initialState.productCategories,
+      productUnits: initialState.productUnits,
+      productColors: initialState.productColors,
+      productSizes: initialState.productSizes,
+      brands: [],
+      groups: [],
+      subgroups: [],
+      lines: [],
+      suppliers: [],
+      marcasString: ['Genérica'],
+      proveedoresString: [],
+      // Sobrescribir con los valores que vinieron (filtrados)
+      ...filteredState,
     };
 
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, ...dataToPersist }));
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(dataToPersist));
     
     if (db) {
-      const docRef = doc(db, COLLECTION, DOC_ID);
+      const docRef = doc(db, CONFIG_COLLECTION, CONFIG_DOC);
       return await setDoc(docRef, dataToPersist);
     }
   },
 
   uid(): string {
     return Date.now().toString(36) + Math.random().toString(36).substr(2, 6);
+  }
+};
+
+// ============================================================
+// COLLECTIONS: Helpers para leer/escribir en colecciones raíz
+// ============================================================
+export const Collections = {
+  async set(collectionName: string, docId: string, data: any) {
+    if (!db) return;
+    await setDoc(doc(db, collectionName, docId), data);
+  },
+
+  async update(collectionName: string, docId: string, data: any) {
+    if (!db) return;
+    await updateDoc(doc(db, collectionName, docId), data);
+  },
+
+  async delete(collectionName: string, docId: string) {
+    if (!db) return;
+    await deleteDoc(doc(db, collectionName, docId));
+  },
+
+  subscribeAll(collectionName: string, callback: (data: any[]) => void, limitCount?: number) {
+    if (!db) return () => {};
+    let ref: CollectionReference | Query = collection(db, collectionName);
+    if (limitCount) ref = query(ref, limit(limitCount));
+    return onSnapshot(ref, (snapshot) => {
+      const list: any[] = [];
+      snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+      callback(list);
+    });
+  },
+
+  subscribeWhere(collectionName: string, field: string, operator: any, value: any, callback: (data: any[]) => void) {
+    if (!db) return () => {};
+    const ref = query(collection(db, collectionName), where(field, operator, value));
+    return onSnapshot(ref, (snapshot) => {
+      const list: any[] = [];
+      snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+      callback(list);
+    });
+  },
+
+  subscribeWhereLimit(collectionName: string, field: string, operator: any, value: any, callback: (data: any[]) => void, limitCount: number) {
+    if (!db) return () => {};
+    const ref = query(collection(db, collectionName), where(field, operator, value), limit(limitCount));
+    return onSnapshot(ref, (snapshot) => {
+      const list: any[] = [];
+      snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+      callback(list);
+    });
+  },
+
+  async getAll(collectionName: string) {
+    if (!db) return [];
+    const snapshot = await getDocs(collection(db, collectionName));
+    const list: any[] = [];
+    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+    return list;
+  },
+
+  async getWhere(collectionName: string, field: string, operator: any, value: any) {
+    if (!db) return [];
+    const q = query(collection(db, collectionName), where(field, operator, value));
+    const snapshot = await getDocs(q);
+    const list: any[] = [];
+    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+    return list;
   }
 };
 

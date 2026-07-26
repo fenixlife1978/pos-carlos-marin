@@ -185,12 +185,18 @@ export interface LibroDiarioEntry {
   referencia: string;
 }
 
+// ============================================================
+// TERMINAL (CON CONTADORES INDEPENDIENTES)
+// ============================================================
 export interface Terminal {
   id: string;
   nombre: string;
   usuarioId: string | null;
   activo: boolean;
   proximoRecibo: number;
+  proximaDevolucion: number;    // 🔑 Contador para devoluciones de este terminal
+  proximaAnulacion: number;     // 🔑 Contador para anulaciones de este terminal
+  proximaVentaEfectivo: number; // 🔑 Contador para ventas de efectivo de este terminal
 }
 
 export interface Supplier {
@@ -251,9 +257,9 @@ export interface ReportZ {
   igtfUSD: number;
   metodosPago: Record<string, number>;
   salidasCajaUSD: number;
-  salidasCajaBS?: number; // <--- AGREGADO
+  salidasCajaBS?: number;
   entradasCajaUSD: number;
-  entradasCajaBS?: number; // <--- AGREGADO (para futura consistencia)
+  entradasCajaBS?: number;
   fondoAperturaUSD: number;
   fondoAperturaBS: number;
   acumuladoHistoricoUSD: number;
@@ -263,7 +269,6 @@ export interface ReportZ {
     anulaciones: number;
     ticketPromedio: number;
   };
-  // ===== VENTA DE EFECTIVO - CORREGIDO =====
   ventaEfectivo?: {
     totalVendidoUSD: number;
     totalVendidoBS: number;

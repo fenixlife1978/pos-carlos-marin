@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { AppState, Return, Sale, ReturnItem, Movimiento, Anulacion, LibroDiarioEntry } from '@/lib/types';
-import { Utils, Store } from '@/lib/db-store';
+import { Utils, Store, Collections } from '@/lib/db-store';
 import { 
   RotateCcw, 
   Search, 
@@ -77,7 +77,12 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
     setIsProcessing(true);
     try {
       const totalDevuelto = returnItems.reduce((s, i) => s + (i.cantidad * i.precioUnitUSD), 0);
-      const idDev = 'DEV-' + String(state.proximaDevolucion || 1).padStart(6, '0');
+      
+      // Obtener el terminal actual y su contador de devoluciones
+      const terminal = state.terminales.find(t => t.id === terminalId);
+      const nextNum = terminal?.proximaDevolucion || 1;
+      const idDev = 'DEV-' + String(nextNum).padStart(6, '0');
+      
       const ahoraStr = Utils.ahora();
 
       const nuevaDevolucion: Return = {
@@ -91,41 +96,48 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
         terminalId: terminalId || 'GLOBAL'
       };
 
-      const nuevosProductos = [...state.productos];
+      // ===== ACTUALIZAR PRODUCTOS (STOCK) =====
+      for (const item of returnItems) {
+        const producto = state.productos.find(p => p.id === item.productoId);
+        if (producto && item.estadoProducto === 'REINTEGRADO_STOCK') {
+          const productoActualizado = { ...producto, stock: producto.stock + item.cantidad };
+          await Collections.set('productos', producto.id, productoActualizado);
+        }
+      }
+
+      // ===== GUARDAR MOVIMIENTOS =====
       const nuevosMovimientos: Movimiento[] = [];
-
-      returnItems.forEach(item => {
-        const pIdx = nuevosProductos.findIndex(p => p.id === item.productoId);
-        if (pIdx >= 0) {
-          const p = nuevosProductos[pIdx];
-          const stockAntes = p.stock;
+      for (const item of returnItems) {
+        const producto = state.productos.find(p => p.id === item.productoId);
+        if (producto) {
+          const stockActualizado = item.estadoProducto === 'REINTEGRADO_STOCK' 
+            ? producto.stock + item.cantidad 
+            : producto.stock;
           
-          if (item.estadoProducto === 'REINTEGRADO_STOCK') {
-            nuevosProductos[pIdx] = { ...p, stock: p.stock + item.cantidad };
-          }
-
-          nuevosMovimientos.push({
+          const mov: Movimiento = {
             id: Store.uid(),
             productoId: item.productoId,
             tipo: 'devolucion',
             cantidad: item.cantidad,
-            stockAntes,
-            stockDespues: nuevosProductos[pIdx].stock,
+            stockAntes: producto.stock,
+            stockDespues: stockActualizado,
             fecha: ahoraStr,
             referencia: `DEVOLUCIÓN ${idDev} - REF VENTA ${selectedSale.id}`,
             terminalId: terminalId || 'GLOBAL'
-          });
+          };
+          await Collections.set('movimientos', mov.id, mov);
+          nuevosMovimientos.push(mov);
         }
-      });
+      }
 
-      const nuevasVentas = state.ventas.map(v => {
-        if (v.id === selectedSale.id) {
-          return { ...v, estado: 'parcialmente_devuelta' as any };
-        }
-        return v;
-      });
+      // ===== ACTUALIZAR VENTA (ESTADO) =====
+      const ventaActualizada: Sale = { 
+        ...selectedSale, 
+        estado: 'parcialmente_devuelta' 
+      };
+      await Collections.set('ventas', selectedSale.id, ventaActualizada);
 
-      // ===== ASIENTO CONTABLE CON MÉTODO CORRECTO =====
+      // ===== ASIENTO CONTABLE =====
       let metodoAsiento: string;
       if (refundMethod === 'EFECTIVO_BS') metodoAsiento = 'efectivo_bs';
       else if (refundMethod === 'EFECTIVO_USD') metodoAsiento = 'efectivo_usd';
@@ -143,15 +155,17 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
         metodo: metodoAsiento,
         referencia: idDev + '-' + (terminalId || 'GLOBAL')
       };
+      await Collections.set('libroDiario', nuevoAsiento.id, nuevoAsiento);
 
-      updateState({
-        productos: nuevosProductos,
-        devoluciones: [nuevaDevolucion, ...(state.devoluciones || [])],
-        movimientos: [...state.movimientos, ...nuevosMovimientos],
-        ventas: nuevasVentas,
-        proximaDevolucion: (state.proximaDevolucion || 1) + 1,
-        libroDiario: [nuevoAsiento, ...(state.libroDiario || [])]
-      });
+      // ===== GUARDAR DEVOLUCIÓN =====
+      await Collections.set('devoluciones', idDev, nuevaDevolucion);
+
+      // ===== ACTUALIZAR TERMINAL (CONTADOR) =====
+      if (terminal) {
+        await Collections.update('terminales', terminal.id, { 
+          proximaDevolucion: nextNum + 1 
+        });
+      }
 
       toast({ title: `Devolución ${idDev} procesada con éxito` });
       setView('list');
@@ -159,6 +173,7 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
       setReturnItems([]);
       setMotivo('');
     } catch (error) {
+      console.error("Error en devolución:", error);
       toast({ title: "Error al procesar la devolución", variant: "destructive" });
     } finally {
       setIsProcessing(false);
@@ -177,35 +192,48 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
     setIsProcessing(true);
     try {
       const ahoraStr = Utils.ahora();
-      const nuevosProductos = [...state.productos];
-      const nuevosMovimientos: Movimiento[] = [];
 
-      selectedSale.items.forEach(item => {
-        const pIdx = nuevosProductos.findIndex(p => p.id === item.productoId);
-        if (pIdx >= 0) {
-          const p = nuevosProductos[pIdx];
-          const stockAntes = p.stock;
-          nuevosProductos[pIdx] = { ...p, stock: p.stock + item.cantidad };
-          
-          nuevosMovimientos.push({
+      // Obtener contador de anulaciones del terminal
+      const terminal = state.terminales.find(t => t.id === terminalId);
+      const nextNum = terminal?.proximaAnulacion || 1;
+      const idAnu = 'ANU-' + String(nextNum).padStart(5, '0');
+
+      // ===== ACTUALIZAR PRODUCTOS (STOCK) =====
+      for (const item of selectedSale.items) {
+        const producto = state.productos.find(p => p.id === item.productoId);
+        if (producto) {
+          const productoActualizado = { ...producto, stock: producto.stock + item.cantidad };
+          await Collections.set('productos', producto.id, productoActualizado);
+        }
+      }
+
+      // ===== GUARDAR MOVIMIENTOS =====
+      for (const item of selectedSale.items) {
+        const producto = state.productos.find(p => p.id === item.productoId);
+        if (producto) {
+          const mov: Movimiento = {
             id: Store.uid(),
             productoId: item.productoId,
             tipo: 'anulacion',
             cantidad: item.cantidad,
-            stockAntes,
-            stockDespues: nuevosProductos[pIdx].stock,
+            stockAntes: producto.stock,
+            stockDespues: producto.stock + item.cantidad,
             fecha: ahoraStr,
             referencia: `ANULACIÓN TOTAL FACTURA #${selectedSale.id}`,
             terminalId: terminalId || 'GLOBAL'
-          });
+          };
+          await Collections.set('movimientos', mov.id, mov);
         }
-      });
+      }
 
-      const nuevasVentas = state.ventas.map(v => 
-        v.id === selectedSale.id ? { ...v, estado: 'anulada' } : v
-      );
+      // ===== ACTUALIZAR VENTA (ESTADO) =====
+      const ventaAnulada: Sale = { 
+        ...selectedSale, 
+        estado: 'anulada' 
+      };
+      await Collections.set('ventas', selectedSale.id, ventaAnulada);
 
-      const idAnu = 'ANU-' + String(state.proximaAnulacion || 1).padStart(5, '0');
+      // ===== GUARDAR ANULACIÓN =====
       const nuevaAnulacion: Anulacion = {
         id: idAnu,
         ventaId: selectedSale.id,
@@ -215,12 +243,12 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
         items: [...selectedSale.items],
         terminalId: terminalId || 'GLOBAL'
       };
+      await Collections.set('anulaciones', idAnu, nuevaAnulacion);
 
-      let nuevosAsientosDiario: LibroDiarioEntry[] = [];
+      // ===== ASIENTO CONTABLE (SI CORRESPONDE) =====
       if (representaEgreso) {
-        // Usar el método de pago original de la venta para el egreso
         const metodo = selectedSale.metodoPago || 'otros';
-        nuevosAsientosDiario.push({
+        const nuevoAsiento: LibroDiarioEntry = {
           id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
           fecha: ahoraStr,
           tipo: 'egreso',
@@ -230,21 +258,23 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
           montoBS: selectedSale.totalBS,
           metodo: metodo,
           referencia: idAnu + '-' + (terminalId || 'GLOBAL')
-        });
+        };
+        await Collections.set('libroDiario', nuevoAsiento.id, nuevoAsiento);
       }
 
-      updateState({
-        productos: nuevosProductos,
-        ventas: nuevasVentas,
-        movimientos: [...state.movimientos, ...nuevosMovimientos],
-        anulaciones: [nuevaAnulacion, ...(state.anulaciones || [])],
-        libroDiario: representaEgreso ? [...nuevosAsientosDiario, ...(state.libroDiario || [])] : state.libroDiario,
-        proximaAnulacion: (state.proximaAnulacion || 1) + 1
-      });
+      // ===== ACTUALIZAR TERMINAL (CONTADOR) =====
+      if (terminal) {
+        await Collections.update('terminales', terminal.id, { 
+          proximaAnulacion: nextNum + 1 
+        });
+      }
 
       toast({ title: "Factura Anulada", description: `El documento ${selectedSale.id} ha sido invalidado bajo el registro ${idAnu}.` });
       setView('list');
       setSelectedSale(null);
+    } catch (error) {
+      console.error("Error en anulación:", error);
+      toast({ title: "Error al anular la factura", variant: "destructive" });
     } finally {
       setIsProcessing(false);
     }

@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { AppState, LibroDiarioEntry, PaymentMethod, Debt } from '@/lib/types';
-import { Utils, Store } from '@/lib/db-store';
+import { Utils, Store, Collections } from '@/lib/db-store';
 import { 
   FileText, 
   Calculator, 
@@ -60,7 +60,7 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
     setPaymentMethod('efectivo_usd');
   };
 
-  const handleProcessPayment = () => {
+  const handleProcessPayment = async () => {
     const amount = parseFloat(paymentAmount) || 0;
     if (amount <= 0) {
       toast({
@@ -82,45 +82,49 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
 
     const ahoraStr = Utils.ahora();
     
-    // 1. Actualizar CxP
-    const nuevasCxP = state.cxp.map((c: Debt) => {
-      if (c.id === showPaymentModal.id) {
-        const nuevoSaldo = Math.max(0, c.saldoUSD - amount);
-        const historialPagos = c.historialPagos || [];
-        return {
-          ...c,
-          abonadoUSD: c.abonadoUSD + amount,
-          saldoUSD: nuevoSaldo,
-          estado: nuevoSaldo <= 0.001 ? 'pagada' : 'parcial',
-          historialPagos: [...historialPagos, {
-            fecha: ahoraStr,
-            montoUSD: amount,
-            montoBS: amount * state.tasa,
-            metodo: paymentMethod,
-            reciboId: `PAY-${Store.uid().toUpperCase().slice(0, 4)}`
-          }]
-        };
-      }
-      return c;
-    });
+    // 1. Actualizar CxP en Firestore
+    const deudaActual = state.cxp.find((c: Debt) => c.id === showPaymentModal.id);
+    if (!deudaActual) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "No se encontró la deuda."
+      });
+      return;
+    }
+
+    const nuevoSaldo = Math.max(0, deudaActual.saldoUSD - amount);
+    const historialPagos = deudaActual.historialPagos || [];
+    const nuevaDeuda = {
+      ...deudaActual,
+      abonadoUSD: deudaActual.abonadoUSD + amount,
+      saldoUSD: nuevoSaldo,
+      estado: nuevoSaldo <= 0.001 ? 'pagada' : 'parcial' as 'pagada' | 'parcial',
+      historialPagos: [...historialPagos, {
+        fecha: ahoraStr,
+        montoUSD: amount,
+        montoBS: amount * state.tasa,
+        metodo: paymentMethod,
+        reciboId: `PAY-${Store.uid().toUpperCase().slice(0, 4)}`
+      }]
+    };
+
+    await Collections.set('cxp', deudaActual.id, nuevaDeuda);
 
     // 2. Crear Asiento Contable (Egreso)
+    const nombreProveedor = deudaActual.proveedor || 'PROVEEDOR SIN NOMBRE';
     const nuevoAsiento: LibroDiarioEntry = {
       id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
       fecha: ahoraStr,
       tipo: 'egreso',
       categoria: 'PAGO_PROVEEDOR' as any,
-      concepto: `PAGO DEUDA A: ${showPaymentModal.proveedor.toUpperCase()} - REF FACT: ${showPaymentModal.numeroFactura || 'S/N'}`,
+      concepto: `PAGO DEUDA A: ${nombreProveedor.toUpperCase()} - REF FACT: ${deudaActual.numeroFactura || 'S/N'}`,
       montoUSD: amount,
       montoBS: amount * state.tasa,
       metodo: paymentMethod,
-      referencia: showPaymentModal.id
+      referencia: deudaActual.id
     };
-
-    updateState({ 
-      cxp: nuevasCxP as Debt[], 
-      libroDiario: [nuevoAsiento, ...(state.libroDiario || [])] 
-    });
+    await Collections.set('libroDiario', nuevoAsiento.id, nuevoAsiento);
 
     toast({
       title: "Pago registrado",
@@ -131,7 +135,7 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
     setPaymentAmount('');
   };
 
-  const handleGuardarDeudaDirecta = () => {
+  const handleGuardarDeudaDirecta = async () => {
     if (!selectedProveedor) {
       toast({
         variant: "destructive",
@@ -160,7 +164,7 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
       return;
     }
 
-    const nuevaDeuda: any = {
+    const nuevaDeuda: Debt = {
       id: 'CXP-' + Store.uid().toUpperCase().slice(0, 6),
       fecha: fechaDeuda,
       fechaVencimiento: fechaDeuda,
@@ -170,12 +174,13 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
       abonadoUSD: 0,
       saldoUSD: monto,
       estado: 'pendiente' as 'pendiente',
-      motivo: deudaMotivo,
+      historialPagos: [],
       items: [],
-      historialPagos: []
+      cliente: undefined,
+      concepto: deudaMotivo
     };
 
-    const nuevasCxP = [...(state.cxp || []), nuevaDeuda];
+    await Collections.set('cxp', nuevaDeuda.id, nuevaDeuda);
 
     // Crear asiento contable por la deuda
     const nuevoAsiento: LibroDiarioEntry = {
@@ -189,11 +194,7 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
       metodo: 'efectivo_usd',
       referencia: nuevaDeuda.id
     };
-
-    updateState({ 
-      cxp: nuevasCxP as Debt[],
-      libroDiario: [nuevoAsiento, ...(state.libroDiario || [])]
-    });
+    await Collections.set('libroDiario', nuevoAsiento.id, nuevoAsiento);
 
     toast({
       title: "Deuda registrada",
@@ -270,7 +271,7 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
                     <td className={`text-xs font-black py-4 ${x.fechaVencimiento < Utils.hoy() && x.estado !== 'pagada' ? 'text-status-danger' : 'text-ink'}`}>
                       {Utils.fmtFecha(x.fechaVencimiento)}
                     </td>
-                    <td className="text-ink font-black text-xs uppercase py-4">{x.proveedor}</td>
+                    <td className="text-ink font-black text-xs uppercase py-4">{x.proveedor || 'SIN PROVEEDOR'}</td>
                     <td className="text-ink font-black text-xs py-4 mono">{x.numeroFactura || '-'}</td>
                     <td className="text-ink font-black text-xs text-right py-4 mono">{Utils.fmtUSD(x.montoUSD)}</td>
                     <td className="text-brand-gold-deep font-black text-sm text-right py-4 mono">{Utils.fmtUSD(x.saldoUSD)}</td>

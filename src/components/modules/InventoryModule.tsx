@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { AppState, Product, Movimiento, KitItem, Supplier, Return } from '@/lib/types';
-import { Utils, Store } from '@/lib/db-store';
+import { Utils, Store, Collections } from '@/lib/db-store';
 import { 
   Plus, 
   Search, 
@@ -103,10 +103,13 @@ export function InventoryModule({ state, updateState }: { state: AppState, updat
 
   const lowStockCount = prods.filter(p => p.stock <= (p.stockMinimo || 0)).length;
 
-  const eliminar = (id: string) => {
+  const eliminar = async (id: string) => {
     if (!confirm('¿Seguro que desea eliminar este producto?')) return;
-    const nuevos = state.productos.map(p => p.id === id ? { ...p, activo: false } : p);
-    updateState({ productos: nuevos });
+    const producto = state.productos.find(p => p.id === id);
+    if (producto) {
+      const productoInactivo = { ...producto, activo: false };
+      await Collections.set('productos', id, productoInactivo);
+    }
   };
 
   const renderContent = () => {
@@ -282,43 +285,52 @@ export function InventoryModule({ state, updateState }: { state: AppState, updat
         />
       )}
 
-      {/* ✅ CORRECCIÓN: Remover isOpen={true} - ProductFormModal no acepta esa prop */}
       {showProducto && (
         <ProductFormModal 
           state={state}
           producto={showProducto === 'nuevo' ? undefined : state.productos.find(p => p.id === showProducto)}
           onClose={() => setShowProducto(null)}
-          onUpdateLists={(lists) => updateState(lists)}
-          onSave={(datos) => {
-            let nuevosProds;
+          onUpdateLists={(lists) => {
+            updateState(lists);
+            Store.set(lists);
+          }}
+          onSave={async (datos) => {
+            let nuevoProducto: Product;
+            
             if (showProducto === 'nuevo') {
-              const nuevo: Product = {
+              nuevoProducto = {
                 ...datos,
                 id: Store.uid(),
                 fechaCreacion: Utils.hoy(),
                 activo: true
               };
-              nuevosProds = [...state.productos, nuevo];
-              if (nuevo.stock > 0) {
+              
+              await Collections.set('productos', nuevoProducto.id, nuevoProducto);
+              
+              if (nuevoProducto.stock > 0) {
                 const mov: Movimiento = {
                   id: Store.uid(),
-                  productoId: nuevo.id,
+                  productoId: nuevoProducto.id,
                   tipo: 'inicial',
-                  cantidad: nuevo.stock,
+                  cantidad: nuevoProducto.stock,
                   stockAntes: 0,
-                  stockDespues: nuevo.stock,
+                  stockDespues: nuevoProducto.stock,
                   fecha: Utils.ahora(),
                   referencia: 'INICIAL',
                   terminalId: 'SISTEMA'
                 };
-                updateState({ productos: nuevosProds, movimientos: [...state.movimientos, mov] });
-              } else {
-                updateState({ productos: nuevosProds });
+                await Collections.set('movimientos', mov.id, mov);
+                // 🔑 Actualizar estado local inmediatamente
+                updateState({ movimientos: [...state.movimientos, mov] });
               }
             } else {
-              nuevosProds = state.productos.map(p => p.id === showProducto ? { ...p, ...datos } : p);
-              updateState({ productos: nuevosProds });
+              const productoExistente = state.productos.find(p => p.id === showProducto);
+              if (productoExistente) {
+                nuevoProducto = { ...productoExistente, ...datos };
+                await Collections.set('productos', showProducto, nuevoProducto);
+              }
             }
+            
             setShowProducto(null);
           }}
         />
@@ -328,60 +340,63 @@ export function InventoryModule({ state, updateState }: { state: AppState, updat
         <ModalAjuste 
           producto={state.productos.find(p => p.id === showAjuste)!} 
           onClose={() => setShowAjuste(null)}
-          onSave={(mov, nuevoCosto) => {
+          onSave={async (mov, nuevoCosto) => {
             const productoOriginal = state.productos.find(p => p.id === mov.productoId);
             if (!productoOriginal) return;
 
-            let prodsActualizados = [...state.productos];
-            let nuevosMovimientos = [...state.movimientos];
+            const nuevosMovimientos: Movimiento[] = [];
 
             if (productoOriginal.isKit && productoOriginal.kitType === 'stock_componentes' && productoOriginal.kitItems) {
-              productoOriginal.kitItems.forEach(ki => {
-                const cpIdx = prodsActualizados.findIndex(cp => cp.id === ki.productoId);
-                if (cpIdx !== -1) {
-                  const cp = { ...prodsActualizados[cpIdx] };
+              for (const ki of productoOriginal.kitItems) {
+                const cp = state.productos.find(c => c.id === ki.productoId);
+                if (cp) {
                   const cantidadImpacto = mov.cantidad * ki.cantidad;
                   const stockAntes = cp.stock;
-                  cp.stock += cantidadImpacto; 
+                  const cpActualizado = { ...cp, stock: cp.stock + cantidadImpacto };
+                  await Collections.set('productos', cp.id, cpActualizado);
                   
-                  nuevosMovimientos.push({
+                  const nuevoMov: Movimiento = {
                     id: Store.uid(),
                     productoId: cp.id,
                     tipo: mov.tipo,
                     cantidad: cantidadImpacto,
                     stockAntes,
-                    stockDespues: cp.stock,
+                    stockDespues: cpActualizado.stock,
                     fecha: mov.fecha,
                     referencia: `${mov.tipo.replace('_', ' ').toUpperCase()} KIT: ${productoOriginal.nombre} - REF: ${mov.referencia}`,
                     terminalId: 'ADMIN'
-                  });
-                  prodsActualizados[cpIdx] = cp;
+                  };
+                  await Collections.set('movimientos', nuevoMov.id, nuevoMov);
+                  nuevosMovimientos.push(nuevoMov);
                 }
-              });
+              }
             } else {
-              prodsActualizados = prodsActualizados.map(p => {
-                if (p.id === mov.productoId) {
-                  let finalCosto = p.costoUSD;
-                  if (mov.tipo === 'ajuste_entrada' || mov.tipo === 'compra') {
-                    const stockActual = p.stock;
-                    const cantidadNueva = Math.abs(mov.cantidad);
-                    const costoNuevo = nuevoCosto || p.costoUSD;
-                    const stockTotal = stockActual + cantidadNueva;
-                    if (stockTotal > 0) {
-                      finalCosto = Utils.round(((stockActual * p.costoUSD) + (cantidadNueva * costoNuevo)) / stockTotal);
-                    }
-                  }
-                  return { ...p, stock: mov.stockDespues, costoUSD: finalCosto };
+              let productoActualizado = { ...productoOriginal };
+              
+              if (mov.tipo === 'ajuste_entrada' || mov.tipo === 'compra') {
+                const stockActual = productoOriginal.stock;
+                const cantidadNueva = Math.abs(mov.cantidad);
+                const costoNuevo = nuevoCosto || productoOriginal.costoUSD;
+                const stockTotal = stockActual + cantidadNueva;
+                let finalCosto = productoOriginal.costoUSD;
+                if (stockTotal > 0) {
+                  finalCosto = Utils.round(((stockActual * productoOriginal.costoUSD) + (cantidadNueva * costoNuevo)) / stockTotal);
                 }
-                return p;
-              });
+                productoActualizado = { ...productoOriginal, stock: mov.stockDespues, costoUSD: finalCosto };
+              } else {
+                productoActualizado = { ...productoOriginal, stock: mov.stockDespues };
+              }
+              
+              await Collections.set('productos', productoActualizado.id, productoActualizado);
+              await Collections.set('movimientos', mov.id, mov);
               nuevosMovimientos.push(mov);
             }
 
-            updateState({ 
-              productos: prodsActualizados, 
-              movimientos: nuevosMovimientos 
-            });
+            // 🔑 Actualizar estado local con los nuevos movimientos
+            if (nuevosMovimientos.length > 0) {
+              updateState({ movimientos: [...state.movimientos, ...nuevosMovimientos] });
+            }
+
             setShowAjuste(null);
           }}
         />

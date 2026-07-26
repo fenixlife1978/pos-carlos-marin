@@ -49,7 +49,7 @@ import { CashSaleModal } from '@/components/pos/CashSaleModal';
 import FloatingPaymentModal from '@/components/pos/FloatingPaymentModal';
 import { toast } from '@/hooks/use-toast';
 import { AppState, SaleItem, Sale, PaymentMethod, ReportZ, PagoRealizado, Customer, Return, ReturnItem, Product, Debt, Movimiento, LibroDiarioEntry } from '@/lib/types';
-import { Utils, Store } from '@/lib/db-store';
+import { Utils, Store, Collections } from '@/lib/db-store';
 import ReturnsModule from '@/components/modules/ReturnsModule';
 import { cn } from '@/lib/utils';
 
@@ -209,7 +209,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   }, [search]);
 
   // ============================================================
-  // CORRECCIÓN: getFreshReportData
+  // CORRECCIÓN: getFreshReportData (modificada para calcular efectivo entregado)
   // ============================================================
   const getFreshReportData = () => {
     const corteTimestamp = state.fechaUltimoZ || '';
@@ -244,10 +244,9 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       .reduce((s, e) => s + e.montoUSD, 0);
     const comisionesBS = comisionesUSD * state.tasa;
     
-    const salidasEfectivo = (state.libroDiario || [])
-      .filter(e => e.fecha > corteTimestamp && e.categoria === 'VENTA_EFECTIVO' && e.referencia.includes(termId))
-      .reduce((s, e) => s + e.montoUSD, 0);
-    const efectivoEntregadoBS = salidasEfectivo * state.tasa;
+    // 🔑 EFECTIVO ENTREGADO = Total Vendido - Comisiones (ya que la comisión es la ganancia)
+    const efectivoEntregadoUSD = efectivoVendidoUSD - comisionesUSD;
+    const efectivoEntregadoBS = efectivoVendidoBS - comisionesBS;
 
     const baseImponibleUSD = ventasNormales.reduce((s, v) => s + (v.baseImponibleUSD || 0), 0);
     const ivaUSD = ventasNormales.reduce((s, v) => s + (v.ivaUSD || 0), 0);
@@ -273,7 +272,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     const desdeNC = sortedDevs.length > 0 ? sortedDevs[0].id : 'N/A';
     const hastaNC = sortedDevs.length > 0 ? sortedDevs[sortedDevs.length - 1].id : 'N/A';
 
-    // 🔑 FILTRAR EGESOS EXCLUYENDO 'VENTA_EFECTIVO' PARA QUE NO APAREZCAN EN SALIDAS DE DEVOLUCIONES/ANULACIONES
     const relevantDiario = (state.libroDiario || []).filter(e => e.fecha > corteTimestamp && e.referencia.includes(termId));
     const totalSalidasCaja = relevantDiario
       .filter(e => e.tipo === 'egreso' && e.categoria !== 'VENTA_EFECTIVO')
@@ -322,7 +320,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         totalVendidoBS: efectivoVendidoBS,
         comisionesUSD: comisionesUSD,
         comisionesBS: comisionesBS,
-        efectivoEntregadoUSD: salidasEfectivo,
+        efectivoEntregadoUSD: efectivoEntregadoUSD,
         efectivoEntregadoBS: efectivoEntregadoBS,
         cantidadTransacciones: ventasEfectivo.length
       }
@@ -335,7 +333,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     setShowReportType(type);
   };
 
-  const ejecutarCierreZ = () => {
+  const ejecutarCierreZ = async () => {
     const data = reportSnapshot;
     if (!data) return;
     const ahora = Utils.ahora();
@@ -367,7 +365,22 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     
     if (typeof localStorage !== 'undefined') localStorage.removeItem('posven_apertura_done');
     
-    updateState({ reportesZ: [...(state.reportesZ || []), nuevoZ], ultimoZ: numeroZ, fechaUltimoZ: ahora, acumuladoHistorico: data.acumuladoHistoricoUSD, fondoCajaHoyBS: 0, fondoCajaHoyUSD: 0 });
+    await Collections.set('reportesZ', nuevoZ.id, nuevoZ);
+    updateState({ 
+      ultimoZ: numeroZ, 
+      fechaUltimoZ: ahora, 
+      acumuladoHistorico: data.acumuladoHistoricoUSD, 
+      fondoCajaHoyBS: 0, 
+      fondoCajaHoyUSD: 0 
+    });
+    Store.set({ 
+      ultimoZ: numeroZ, 
+      fechaUltimoZ: ahora, 
+      acumuladoHistorico: data.acumuladoHistoricoUSD, 
+      fondoCajaHoyBS: 0, 
+      fondoCajaHoyUSD: 0 
+    });
+    
     toast({ title: `Cierre Fiscal Z #${numeroZ} Exitoso` });
     setShowReportType(null);
   };
@@ -425,45 +438,37 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   };
 
   // ============================================================
-  // NUEVO: EFECTO PARA ACTUALIZAR EL CARRITO EN TIEMPO REAL AL CAMBIAR EL MONTO EN BS
+  // EFECTO PARA ACTUALIZAR EL CARRITO EN TIEMPO REAL AL CAMBIAR EL MONTO EN BS
   // ============================================================
   useEffect(() => {
-    // Solo si hay un producto seleccionado y un monto válido
     if (!selectedProductDisplay) {
       return;
     }
 
     const monto = parseFloat(montoVentaBS.replace(/\./g, ''));
     if (isNaN(monto) || monto <= 0) {
-      // Si el monto es 0 o vacío, no actualizamos el carrito (dejamos que el usuario decida)
       return;
     }
 
-    // Calcular cantidad en unidades del producto
     const montoUSD = monto / state.tasa;
     const cantidad = montoUSD / selectedProductDisplay.precioUSD;
 
     if (cantidad <= 0) return;
 
-    // Redondear a 2 decimales
     const cantidadRedondeada = Math.round(cantidad * 100) / 100;
 
-    // Verificar stock
     const stockAvail = getStockDisponible(selectedProductDisplay);
     if (cantidadRedondeada > stockAvail) {
       toast({ variant: "destructive", title: "Stock insuficiente", description: `Stock disponible: ${stockAvail} ${selectedProductDisplay.cantidad || 'und'}` });
       return;
     }
 
-    // Actualizar el carrito: reemplazar o agregar el ítem
     const nuevoCarrito = [...state.carrito];
     const idx = nuevoCarrito.findIndex(i => i.productoId === selectedProductDisplay.id);
     if (idx >= 0) {
-      // Actualizar cantidad y subtotal
       nuevoCarrito[idx].cantidad = cantidadRedondeada;
       nuevoCarrito[idx].subtotalUSD = cantidadRedondeada * nuevoCarrito[idx].precioUnitUSD;
     } else {
-      // Agregar nuevo ítem
       nuevoCarrito.push({
         productoId: selectedProductDisplay.id,
         nombre: selectedProductDisplay.nombre,
@@ -473,7 +478,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       });
     }
 
-    // Actualizar estado del carrito (solo si hay cambios reales)
     const currentCarrito = state.carrito;
     const same = currentCarrito.length === nuevoCarrito.length && 
                   currentCarrito.every((item, i) => 
@@ -485,10 +489,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     }
 
   }, [montoVentaBS, selectedProductDisplay, state.tasa, state.carrito, updateState, getStockDisponible]);
-
-  // ============================================================
-  // FIN NUEVO EFECTO
-  // ============================================================
 
   // ===== ACTUALIZAR CANTIDAD CALCULADA EN TIEMPO REAL (para mostrar) =====
   useEffect(() => {
@@ -586,11 +586,12 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     const n = parseFloat(nuevaTasa);
     if (isNaN(n) || n <= 0) return alert('Tasa inválida');
     updateState({ tasa: n });
+    Store.set({ tasa: n });
     setEditandoTasa(false);
   };
 
   // ============================================================
-  // FUNCIONES DE VENTA CORREGIDAS (con locks y correlatividad)
+  // FUNCIONES DE VENTA CORREGIDAS (con locks y guardado en colecciones)
   // ============================================================
   const ejecutarVenta = async (pagosFinales?: PagoRealizado[]) => {
     if (processingRef.current) return;
@@ -609,31 +610,66 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       const ahoraStr = Utils.ahora();
       
       let vExento = 0, vBase = 0, vIVA = 0;
-      let prodsActualizados = [...state.productos], nuevosMovimientos: Movimiento[] = [];
+      const prodsActualizados: Product[] = [];
+      const nuevosMovimientos: Movimiento[] = [];
 
-      state.carrito.forEach(item => {
-        const pIdx = prodsActualizados.findIndex(x => x.id === item.productoId);
-        if (pIdx === -1) return;
-        const p = { ...prodsActualizados[pIdx] };
-        if (p.aplicaIVA) { const base = item.subtotalUSD / 1.16; vBase += base; vIVA += (item.subtotalUSD - base); } else { vExento += item.subtotalUSD; }
+      // Procesar cada item del carrito y actualizar stock en Firestore
+      for (const item of state.carrito) {
+        const p = state.productos.find(x => x.id === item.productoId);
+        if (!p) continue;
+        
+        if (p.aplicaIVA) { 
+          const base = item.subtotalUSD / 1.16; 
+          vBase += base; 
+          vIVA += (item.subtotalUSD - base); 
+        } else { 
+          vExento += item.subtotalUSD; 
+        }
+        
         if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems) {
-          p.kitItems.forEach(ki => {
-            const cpIdx = prodsActualizados.findIndex(cp => cp.id === ki.productoId);
-            if (cpIdx !== -1) {
-              const cp = { ...prodsActualizados[cpIdx] };
-              const qty = item.cantidad * ki.cantidad, stockAntes = cp.stock;
-              cp.stock -= qty;
-              nuevosMovimientos.push({ id: Store.uid(), productoId: cp.id, tipo: 'venta', cantidad: -qty, stockAntes, stockDespues: cp.stock, fecha: ahoraStr, referencia: `KIT: ${p.nombre} - VENTA ${reciboId}`, terminalId: terminal?.id || 'GLOBAL' });
-              prodsActualizados[cpIdx] = cp;
+          for (const ki of p.kitItems) {
+            const cp = state.productos.find(c => c.id === ki.productoId);
+            if (cp) {
+              const qty = item.cantidad * ki.cantidad;
+              const stockAntes = cp.stock;
+              const cpActualizado = { ...cp, stock: cp.stock - qty };
+              await Collections.set('productos', cp.id, cpActualizado);
+              
+              const mov: Movimiento = {
+                id: Store.uid(),
+                productoId: cp.id,
+                tipo: 'venta',
+                cantidad: -qty,
+                stockAntes,
+                stockDespues: cpActualizado.stock,
+                fecha: ahoraStr,
+                referencia: `KIT: ${p.nombre} - VENTA ${reciboId}`,
+                terminalId: terminal?.id || 'GLOBAL'
+              };
+              await Collections.set('movimientos', mov.id, mov);
+              nuevosMovimientos.push(mov);
             }
-          });
+          }
         } else {
           const stockAntes = p.stock;
-          p.stock -= item.cantidad;
-          nuevosMovimientos.push({ id: Store.uid(), productoId: item.productoId, tipo: 'venta', cantidad: -item.cantidad, stockAntes, stockDespues: p.stock, fecha: ahoraStr, referencia: `VENTA ${reciboId}`, terminalId: terminal?.id || 'GLOBAL' });
-          prodsActualizados[pIdx] = p;
+          const pActualizado = { ...p, stock: p.stock - item.cantidad };
+          await Collections.set('productos', p.id, pActualizado);
+          
+          const mov: Movimiento = {
+            id: Store.uid(),
+            productoId: item.productoId,
+            tipo: 'venta',
+            cantidad: -item.cantidad,
+            stockAntes,
+            stockDespues: pActualizado.stock,
+            fecha: ahoraStr,
+            referencia: `VENTA ${reciboId}`,
+            terminalId: terminal?.id || 'GLOBAL'
+          };
+          await Collections.set('movimientos', mov.id, mov);
+          nuevosMovimientos.push(mov);
         }
-      });
+      }
 
       const vIgtf = listadoPagos.filter(p => p.metodo === 'efectivo_usd' || p.metodo === 'zelle').reduce((acc, p) => acc + (p.montoUSD * 0.03), 0);
       
@@ -652,8 +688,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         received: totalPagadoRecibido, 
         change: Math.max(0, totalPagadoRecibido - subtotalUSD), 
         payments: [...listadoPagos], 
-        terminalId: terminal?.id, 
-        terminalName: terminal?.nombre || 'SISTEMA GLOBAL', 
+        terminalId: terminal?.id || 'GLOBAL',
+        terminalName: terminal?.nombre || 'SISTEMA GLOBAL',
         cajeroId: auth?.currentUser?.uid, 
         baseImponibleUSD: Utils.round(vBase), 
         ivaUSD: Utils.round(vIVA), 
@@ -662,27 +698,34 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         tasa: state.tasa
       };
       
-      const nuevasEntradasDiario: LibroDiarioEntry[] = listadoPagos.map(p => ({ 
-        id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5), 
-        fecha: ahoraStr, 
-        tipo: 'ingreso', 
-        categoria: 'VENTA', 
-        concepto: `VENTA #${reciboId} - CLIENTE: ${cliente.toUpperCase()}`, 
-        montoUSD: p.montoUSD, 
-        montoBS: p.montoBS, 
-        metodo: p.metodo, 
-        referencia: reciboId + '-' + (terminal?.id || 'GLOBAL') 
-      }));
+      // Guardar venta
+      await Collections.set('ventas', reciboId, nuevaVenta);
       
-      await updateState({ 
-        productos: prodsActualizados, 
-        ventas: [...state.ventas, nuevaVenta], 
-        movimientos: [...state.movimientos, ...nuevosMovimientos], 
-        libroDiario: [...nuevasEntradasDiario, ...(state.libroDiario || [])], 
-        carrito: [], 
-        proximoRecibo: nextNum + 1,
-        terminales: state.terminales.map(t => t.id === terminal?.id ? { ...t, proximoRecibo: nextNum + 1 } : t) 
-      });
+      // Guardar libro diario
+      for (const p of listadoPagos) {
+        const asiento: LibroDiarioEntry = {
+          id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
+          fecha: ahoraStr,
+          tipo: 'ingreso',
+          categoria: 'VENTA',
+          concepto: `VENTA #${reciboId} - CLIENTE: ${cliente.toUpperCase()}`,
+          montoUSD: p.montoUSD,
+          montoBS: p.montoBS,
+          metodo: p.metodo,
+          referencia: reciboId + '-' + (terminal?.id || 'GLOBAL')
+        };
+        await Collections.set('libroDiario', asiento.id, asiento);
+      }
+      
+      // Actualizar terminal (proximoRecibo)
+      if (terminal) {
+        await Collections.update('terminales', terminal.id, { 
+          proximoRecibo: nextNum + 1 
+        });
+      }
+      
+      // Limpiar carrito
+      updateState({ carrito: [] });
       
       setLastProcessedSale(nuevaVenta); 
       setShowReceiptModal(true); 
@@ -708,31 +751,41 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       const nextNum = terminal?.proximoRecibo || state.proximoRecibo;
       const reciboId = 'PAY-' + String(nextNum).padStart(6, '0');
       
-      const nuevasDeudas: Debt[] = state.cxc.map(d => {
-        if (d.id === showAbonoModal.id) {
-          const nuevoSaldo = Math.max(0, d.saldoUSD - totalAbonado);
-          const updated: Debt = { 
-            ...d, 
-            abonadoUSD: d.abonadoUSD + totalAbonado, 
-            saldoUSD: nuevoSaldo, 
-            estado: (nuevoSaldo <= 0.001 ? 'pagada' : 'parcial') as 'pagada' | 'parcial', 
-            historialPagos: [...(d.historialPagos || []), { fecha: ahoraStr, montoUSD: totalAbonado, montoBS: totalAbonado * state.tasa, metodo: pagosAbono.length > 1 ? 'mixto' : pagosAbono[0].metodo, reciboId }] 
-          };
-          return updated;
-        }
-        return d;
-      });
-      const nuevosAsientos: LibroDiarioEntry[] = pagosAbono.map(p => ({ 
-        id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5), 
-        fecha: ahoraStr, 
-        tipo: 'ingreso', 
-        categoria: 'COBRO_DEUDA', 
-        concepto: `ABONO DEUDA #${showAbonoModal.id} - CLIENTE: ${showAbonoModal.cliente?.toUpperCase()}`, 
-        montoUSD: p.montoUSD, 
-        montoBS: p.montoBS, 
-        metodo: p.metodo, 
-        referencia: reciboId + '-' + (terminal?.id || 'GLOBAL') 
-      }));
+      // Actualizar deuda en cxc
+      const deudaActual = state.cxc.find(d => d.id === showAbonoModal.id);
+      if (deudaActual) {
+        const nuevoSaldo = Math.max(0, deudaActual.saldoUSD - totalAbonado);
+        const deudaActualizada: Debt = { 
+          ...deudaActual, 
+          abonadoUSD: deudaActual.abonadoUSD + totalAbonado, 
+          saldoUSD: nuevoSaldo, 
+          estado: (nuevoSaldo <= 0.001 ? 'pagada' : 'parcial') as 'pagada' | 'parcial', 
+          historialPagos: [...(deudaActual.historialPagos || []), { 
+            fecha: ahoraStr, 
+            montoUSD: totalAbonado, 
+            montoBS: totalAbonado * state.tasa, 
+            metodo: pagosAbono.length > 1 ? 'mixto' : pagosAbono[0].metodo, 
+            reciboId 
+          }] 
+        };
+        await Collections.set('cxc', deudaActual.id, deudaActualizada);
+      }
+      
+      // Guardar libro diario
+      for (const p of pagosAbono) {
+        const asiento: LibroDiarioEntry = {
+          id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
+          fecha: ahoraStr,
+          tipo: 'ingreso',
+          categoria: 'COBRO_DEUDA',
+          concepto: `ABONO DEUDA #${showAbonoModal.id} - CLIENTE: ${showAbonoModal.cliente?.toUpperCase()}`,
+          montoUSD: p.montoUSD,
+          montoBS: p.montoBS,
+          metodo: p.metodo,
+          referencia: reciboId + '-' + (terminal?.id || 'GLOBAL')
+        };
+        await Collections.set('libroDiario', asiento.id, asiento);
+      }
       
       const saleAbono: Sale = { 
         id: reciboId, 
@@ -747,18 +800,19 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         estado: 'completada', 
         type: 'COBRO DEUDA', 
         payments: [...pagosAbono], 
-        terminalId: terminal?.id, 
+        terminalId: terminal?.id || 'GLOBAL',
         terminalName: terminal?.nombre || 'SISTEMA GLOBAL',
         tasa: state.tasa
       };
       
-      await updateState({ 
-        cxc: nuevasDeudas, 
-        libroDiario: [...nuevosAsientos, ...(state.libroDiario || [])], 
-        proximoRecibo: nextNum + 1, 
-        ventas: [...state.ventas, saleAbono], 
-        terminales: state.terminales.map(t => t.id === terminal?.id ? { ...t, proximoRecibo: nextNum + 1 } : t) 
-      });
+      await Collections.set('ventas', reciboId, saleAbono);
+      
+      // Actualizar terminal (proximoRecibo)
+      if (terminal) {
+        await Collections.update('terminales', terminal.id, { 
+          proximoRecibo: nextNum + 1 
+        });
+      }
       
       setLastProcessedSale(saleAbono); 
       setShowReceiptModal(true); 
@@ -784,31 +838,65 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       const ahoraStr = Utils.ahora();
       
       let vExento = 0, vBase = 0, vIVA = 0;
-      let prodsActualizados = [...state.productos], nuevosMovimientos: Movimiento[] = [];
-      
-      state.carrito.forEach(item => {
-        const pIdx = prodsActualizados.findIndex(x => x.id === item.productoId);
-        if (pIdx === -1) return;
-        const p = { ...prodsActualizados[pIdx] };
-        if (p.aplicaIVA) { const base = item.subtotalUSD / 1.16; vBase += base; vIVA += (item.subtotalUSD - base); } else { vExento += item.subtotalUSD; }
+      const nuevosMovimientos: Movimiento[] = [];
+
+      // Procesar cada item del carrito
+      for (const item of state.carrito) {
+        const p = state.productos.find(x => x.id === item.productoId);
+        if (!p) continue;
+        
+        if (p.aplicaIVA) { 
+          const base = item.subtotalUSD / 1.16; 
+          vBase += base; 
+          vIVA += (item.subtotalUSD - base); 
+        } else { 
+          vExento += item.subtotalUSD; 
+        }
+        
         if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems) {
-          p.kitItems.forEach(ki => {
-            const cpIdx = prodsActualizados.findIndex(cp => cp.id === ki.productoId);
-            if (cpIdx !== -1) {
-              const cp = { ...prodsActualizados[cpIdx] };
-              const qty = item.cantidad * ki.cantidad, stockAntes = cp.stock;
-              cp.stock -= qty;
-              nuevosMovimientos.push({ id: Store.uid(), productoId: cp.id, tipo: 'venta', cantidad: -qty, stockAntes, stockDespues: cp.stock, fecha: ahoraStr, referencia: `KIT: ${p.nombre} - CRÉDITO ${reciboId}`, terminalId: terminal?.id || 'GLOBAL' });
-              prodsActualizados[cpIdx] = cp;
+          for (const ki of p.kitItems) {
+            const cp = state.productos.find(c => c.id === ki.productoId);
+            if (cp) {
+              const qty = item.cantidad * ki.cantidad;
+              const stockAntes = cp.stock;
+              const cpActualizado = { ...cp, stock: cp.stock - qty };
+              await Collections.set('productos', cp.id, cpActualizado);
+              
+              const mov: Movimiento = {
+                id: Store.uid(),
+                productoId: cp.id,
+                tipo: 'venta',
+                cantidad: -qty,
+                stockAntes,
+                stockDespues: cpActualizado.stock,
+                fecha: ahoraStr,
+                referencia: `KIT: ${p.nombre} - CRÉDITO ${reciboId}`,
+                terminalId: terminal?.id || 'GLOBAL'
+              };
+              await Collections.set('movimientos', mov.id, mov);
+              nuevosMovimientos.push(mov);
             }
-          });
+          }
         } else {
           const stockAntes = p.stock;
-          p.stock -= item.cantidad;
-          nuevosMovimientos.push({ id: Store.uid(), productoId: item.productoId, tipo: 'venta', cantidad: -item.cantidad, stockAntes, stockDespues: p.stock, fecha: ahoraStr, referencia: `CRÉDITO ${reciboId}`, terminalId: terminal?.id || 'GLOBAL' });
-          prodsActualizados[pIdx] = p;
+          const pActualizado = { ...p, stock: p.stock - item.cantidad };
+          await Collections.set('productos', p.id, pActualizado);
+          
+          const mov: Movimiento = {
+            id: Store.uid(),
+            productoId: item.productoId,
+            tipo: 'venta',
+            cantidad: -item.cantidad,
+            stockAntes,
+            stockDespues: pActualizado.stock,
+            fecha: ahoraStr,
+            referencia: `CRÉDITO ${reciboId}`,
+            terminalId: terminal?.id || 'GLOBAL'
+          };
+          await Collections.set('movimientos', mov.id, mov);
+          nuevosMovimientos.push(mov);
         }
-      });
+      }
       
       const nuevaVenta: Sale = { 
         id: reciboId, 
@@ -824,8 +912,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         type: 'VENTA CRÉDITO', 
         received: 0, 
         change: 0, 
-        terminalId: terminal?.id, 
-        terminalName: terminal?.nombre || 'SISTEMA GLOBAL', 
+        terminalId: terminal?.id || 'GLOBAL',
+        terminalName: terminal?.nombre || 'SISTEMA GLOBAL',
         cajeroId: auth?.currentUser?.uid, 
         baseImponibleUSD: Utils.round(vBase), 
         ivaUSD: Utils.round(vIVA), 
@@ -833,6 +921,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         igtfUSD: 0,
         tasa: state.tasa
       };
+      
+      await Collections.set('ventas', reciboId, nuevaVenta);
       
       const cedulaNormalizada = normalizeCedula(customer.cedula, extractDocType(customer.cedula));
       const nombreCliente = customer.name;
@@ -850,16 +940,23 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         ventaId: reciboId 
       };
       
-      await updateState({ 
-        productos: prodsActualizados, 
-        ventas: [...state.ventas, nuevaVenta], 
-        movimientos: [...state.movimientos, ...nuevosMovimientos], 
-        cxc: [...state.cxc, nuevaDeuda], 
-        clientes: (state.clientes || []).map(c => c.id === customer.id ? { ...c, debt: (c.debt || 0) + subtotalUSD } : c), 
-        proximoRecibo: nextNum + 1, 
-        terminales: state.terminales.map(t => t.id === terminal?.id ? { ...t, proximoRecibo: nextNum + 1 } : t), 
-        carrito: [] 
-      });
+      await Collections.set('cxc', nuevaDeuda.id, nuevaDeuda);
+      
+      // Actualizar cliente con nueva deuda
+      if (customer.id) {
+        const clienteActualizado = { ...customer, debt: (customer.debt || 0) + subtotalUSD };
+        await Collections.set('clientes', customer.id, clienteActualizado);
+      }
+      
+      // Actualizar terminal
+      if (terminal) {
+        await Collections.update('terminales', terminal.id, { 
+          proximoRecibo: nextNum + 1 
+        });
+      }
+      
+      // Limpiar carrito
+      updateState({ carrito: [] });
       
       setLastProcessedSale(nuevaVenta); 
       setShowReceiptModal(true); 
@@ -891,7 +988,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   };
 
   // ============================================================
-  // FUNCIÓN MODIFICADA: VENTA DE EFECTIVO CON PREFIJO "EFE-" Y ASIENTO DE EGRESO
+  // VENTA DE EFECTIVO CON CONTADOR POR TERMINAL Y ACTUALIZACIÓN INMEDIATA
+  // CORREGIDO: SOLO SE REGISTRA LA COMISIÓN EN EL LIBRO DIARIO, NO LA ENTREGA DE EFECTIVO
   // ============================================================
   const procesarVentaEfectivo = (data: {
     montoEfectivoBS: number;
@@ -901,7 +999,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   }) => {
     const ahoraStr = Utils.ahora();
     const terminal = getCurrentTerminal();
-    const nextNum = terminal?.proximoRecibo || state.proximoRecibo;
+    const nextNum = terminal?.proximaVentaEfectivo || 1;
     const reciboId = 'EFE-' + String(nextNum).padStart(7, '0');
 
     const totalUSD = data.totalAPagarBS / state.tasa;
@@ -936,7 +1034,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         montoUSD: totalUSD,
         montoBS: data.totalAPagarBS
       }],
-      terminalId: terminal?.id,
+      terminalId: terminal?.id || 'GLOBAL',
       terminalName: terminal?.nombre || 'SISTEMA GLOBAL',
       cajeroId: auth?.currentUser?.uid,
       baseImponibleUSD: totalUSD,
@@ -946,6 +1044,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       tasa: state.tasa
     };
 
+    // ÚNICO ASIENTO: comisión ganada (ingreso)
     const asientoComision: LibroDiarioEntry = {
       id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
       fecha: ahoraStr,
@@ -958,23 +1057,22 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       referencia: reciboId + '-' + (terminal?.id || 'GLOBAL')
     };
 
-    // 🔑 ASIENTO DE EGRESO POR EFECTIVO ENTREGADO (categoría VENTA_EFECTIVO)
-    const asientoEfectivoEntregado: LibroDiarioEntry = {
-      id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5) + 'E',
-      fecha: ahoraStr,
-      tipo: 'egreso',
-      categoria: 'VENTA_EFECTIVO',
-      concepto: `ENTREGA DE EFECTIVO EN BS - VENTA #${reciboId} - CLIENTE: ${cliente || 'CONSUMIDOR FINAL'}`,
-      montoUSD: efectivoUSD,
-      montoBS: data.montoEfectivoBS,
-      metodo: 'efectivo_bs', // Siempre en bolívares
-      referencia: reciboId + '-' + (terminal?.id || 'GLOBAL')
-    };
+    // 🔑 Guardar en Firestore (solo la comisión)
+    Collections.set('ventas', reciboId, nuevaVenta);
+    Collections.set('libroDiario', asientoComision.id, asientoComision);
 
-    updateState({
+    // 🔑 Actualizar estado local INMEDIATAMENTE (solo la comisión, no el egreso)
+    updateState({ 
       ventas: [...state.ventas, nuevaVenta],
-      libroDiario: [asientoComision, asientoEfectivoEntregado, ...(state.libroDiario || [])],
+      libroDiario: [asientoComision, ...(state.libroDiario || [])]
     });
+
+    // Actualizar contador del terminal
+    if (terminal) {
+      Collections.update('terminales', terminal.id, { 
+        proximaVentaEfectivo: nextNum + 1 
+      });
+    }
 
     toast({
       title: "Venta de Efectivo Registrada",
