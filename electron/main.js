@@ -1,7 +1,20 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, net } = require('electron');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { ThermalPrinter, PrinterTypes, CharacterSet, BreakLine } = require('node-thermal-printer');
 const fs = require('fs');
+
+// ============================================================
+// FORZAR ZONA HORARIA DE VENEZUELA
+// ============================================================
+app.commandLine.appendSwitch('timezone', 'America/Caracas');
+
+// ============================================================
+// REGISTRAR PROTOCOLO SEGURO 'app' (VITAL PARA OFFLINE)
+// ============================================================
+protocol.registerSchemesAsPrivileged([
+  { scheme: "app", privileges: { standard: true, secure: true, supportFetchAPI: true } }
+]);
 
 // ============================================================
 // CONFIGURACIÓN DE IMPRESIÓN (sin driver explícito)
@@ -71,21 +84,8 @@ function createWindow() {
     win.loadURL('http://localhost:9002');
     win.webContents.openDevTools();
   } else {
-    // ===== RUTA CORREGIDA: usar path.join con __dirname =====
-    const indexPath = path.join(__dirname, '../out/index.html');
-    
-    // Log para depuración
-    console.log('📁 Cargando index desde:', indexPath);
-    
-    win.loadFile(indexPath).catch((err) => {
-      console.error('❌ Error al cargar index.html:', err);
-      // Fallback: intentar cargar desde la raíz
-      const fallbackPath = path.join(process.resourcesPath, 'app.asar', 'out', 'index.html');
-      console.log('📁 Intentando fallback:', fallbackPath);
-      win.loadFile(fallbackPath).catch((err2) => {
-        console.error('❌ Fallback también falló:', err2);
-      });
-    });
+    // ✅ CORRECCIÓN: Usar protocolo 'app' en lugar de loadFile
+    win.loadURL('app://-');
   }
 
   win.once('ready-to-show', () => {
@@ -107,9 +107,36 @@ function createWindow() {
 }
 
 // ============================================================
-// CICLO DE VIDA DE LA APLICACIÓN
+// INICIALIZACIÓN DE LA APLICACIÓN
 // ============================================================
 app.whenReady().then(() => {
+  // ✅ Manejador de protocolo 'app' para servir archivos estáticos
+  protocol.handle("app", (request) => {
+    const url = new URL(request.url);
+    let pathname = url.pathname;
+
+    if (pathname === "/" || pathname === "") {
+      pathname = "/index.html";
+    } else if (!path.extname(pathname)) {
+      pathname = path.join(pathname, "index.html");
+    }
+
+    // 🔑 Ruta CORRECTA: 'out' está en la raíz del proyecto
+    const filePath = path.join(__dirname, "..", "out", pathname);
+    console.log('📁 Sirviendo archivo:', filePath);
+    
+    try {
+      return net.fetch(pathToFileURL(filePath).toString());
+    } catch (error) {
+      console.error('❌ Error al servir archivo:', error);
+      // Fallback: intentar desde resourcesPath
+      const fallbackPath = path.join(process.resourcesPath, 'app.asar', 'out', pathname);
+      console.log('📁 Intentando fallback:', fallbackPath);
+      return net.fetch(pathToFileURL(fallbackPath).toString());
+    }
+  });
+
+  // Registrar handlers IPC
   ipcMain.handle('print-ticket', handlePrintTicket);
   ipcMain.handle('get-app-version', handleGetAppVersion);
 
@@ -133,5 +160,7 @@ app.on('window-all-closed', () => {
 // ============================================================
 // const { autoUpdater } = require('electron-updater');
 // app.whenReady().then(() => {
-//   autoUpdater.checkForUpdatesAndNotify();
+//   if (app.isPackaged) {
+//     autoUpdater.checkForUpdatesAndNotify();
+//   }
 // });
