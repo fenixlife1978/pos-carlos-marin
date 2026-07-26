@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'export',
+  // ⚠️ CAMBIADO: 'export' no es compatible con Firebase Auth en producción
+  // output: 'export',  // ← COMENTADO
+  output: 'standalone',  // ← RECOMENDADO para apps con Firebase Auth
   trailingSlash: true,
   distDir: 'out',
   basePath: '',
