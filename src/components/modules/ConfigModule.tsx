@@ -63,27 +63,44 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
   };
 
   // ============================================================
-  // FUNCIÓN PARA ELIMINAR UNA COLECCIÓN COMPLETA CON BATCH
+  // FUNCIÓN MEJORADA PARA ELIMINAR UNA COLECCIÓN COMPLETA
   // ============================================================
   const deleteCollection = async (collectionPath: string, batchSize = 100) => {
     try {
       const colRef = collection(db, collectionPath);
-      const snapshot = await getDocs(query(colRef, limit(batchSize)));
-
+      
+      // Verificar si la colección existe y tiene datos
+      const snapshot = await getDocs(query(colRef, limit(1)));
+      
       if (snapshot.empty) {
         console.log(`✅ Colección "${collectionPath}" vacía o no existe.`);
-        return;
+        return 0;
       }
 
-      const batch = writeBatch(db);
-      snapshot.docs.forEach((docSnap) => {
-        batch.delete(docSnap.ref);
-      });
-      await batch.commit();
-
-      await deleteCollection(collectionPath, batchSize);
+      let totalDeleted = 0;
+      
+      while (true) {
+        const batch = writeBatch(db);
+        const docsToDelete = await getDocs(query(colRef, limit(batchSize)));
+        
+        if (docsToDelete.empty) {
+          break;
+        }
+        
+        docsToDelete.forEach((docSnap) => {
+          batch.delete(docSnap.ref);
+        });
+        
+        await batch.commit();
+        totalDeleted += docsToDelete.size;
+        console.log(`🗑️ Eliminados ${totalDeleted} documentos de "${collectionPath}"`);
+      }
+      
+      console.log(`✅ Colección "${collectionPath}" eliminada completamente (${totalDeleted} docs).`);
+      return totalDeleted;
     } catch (error) {
       console.warn(`⚠️ Error al eliminar colección "${collectionPath}":`, error);
+      return 0;
     }
   };
 
@@ -102,7 +119,9 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
     if (!confirm(confirmMsg)) return;
 
     setIsFormatting(true);
+    
     try {
+      // Lista de colecciones a eliminar
       const colecciones = [
         'productos',
         'ventas',
@@ -124,11 +143,14 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
       ];
 
       console.log('🗑️ Iniciando eliminación de colecciones...');
-      for (const colName of colecciones) {
-        console.log(`Eliminando colección "${colName}"...`);
-        await deleteCollection(colName);
-      }
+      
+      // Eliminar colecciones en paralelo para mayor velocidad
+      const deletePromises = colecciones.map(colName => deleteCollection(colName));
+      await Promise.all(deletePromises);
+      
+      console.log('✅ Todas las colecciones eliminadas.');
 
+      // Reiniciar configuración global
       const configRef = doc(db, 'config', 'global');
       await setDoc(configRef, {
         ...initialState,
@@ -157,6 +179,7 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
       });
       console.log('✅ Configuración global reiniciada en config/global.');
 
+      // Limpiar almacenamiento local
       if (typeof sessionStorage !== 'undefined') sessionStorage.clear();
       if (typeof localStorage !== 'undefined') {
         localStorage.removeItem('posven_apertura_done');
@@ -168,20 +191,24 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
         description: "Todos los datos han sido eliminados permanentemente." 
       });
 
+      // Cerrar sesión y redirigir al login
       try {
         await signOut(auth);
       } catch (e) {
         console.warn('⚠️ Error al cerrar sesión:', e);
       }
 
-      window.location.href = '/login';
+      // Redirigir después de un breve delay para que Firebase complete las operaciones
+      setTimeout(() => {
+        window.location.href = '/login';
+      }, 500);
 
     } catch (error: any) {
       console.error("❌ Error en formateo:", error);
       toast({ 
         variant: "destructive", 
         title: "Fallo en Limpieza", 
-        description: error.message 
+        description: error.message || "Hubo un error al formatear el sistema. Intente nuevamente." 
       });
     } finally {
       setIsFormatting(false);
