@@ -17,7 +17,8 @@ import {
   User,
   DollarSign,
   FilePlus,
-  Save
+  Save,
+  Clock
 } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { exportarPDFCxP } from '@/lib/pdf-generator';
@@ -40,6 +41,7 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
   const [deudaMonto, setDeudaMonto] = useState('');
   const [deudaMotivo, setDeudaMotivo] = useState('');
   const [fechaDeuda, setFechaDeuda] = useState(Utils.hoy());
+  const [fechaVencimiento, setFechaVencimiento] = useState(Utils.hoy());
 
   const pendientes = (state.cxp || []).filter((x: Debt) => x.estado !== 'pagada');
   const totalPendiente = pendientes.reduce((s: number, x: Debt) => s + x.saldoUSD, 0);
@@ -164,10 +166,11 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
       return;
     }
 
+    // 🔑 CORREGIDO: usar 'concepto' en lugar de 'motivo'
     const nuevaDeuda: Debt = {
       id: 'CXP-' + Store.uid().toUpperCase().slice(0, 6),
       fecha: fechaDeuda,
-      fechaVencimiento: fechaDeuda,
+      fechaVencimiento: fechaVencimiento,
       proveedor: selectedProveedor,
       numeroFactura: `DEUDA-DIRECTA-${Store.uid().toUpperCase().slice(0, 4)}`,
       montoUSD: monto,
@@ -176,8 +179,7 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
       estado: 'pendiente' as 'pendiente',
       historialPagos: [],
       items: [],
-      cliente: undefined,
-      concepto: deudaMotivo
+      concepto: deudaMotivo  // ✅ Campo correcto según el tipo Debt
     };
 
     await Collections.set('cxp', nuevaDeuda.id, nuevaDeuda);
@@ -196,6 +198,12 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
     };
     await Collections.set('libroDiario', nuevoAsiento.id, nuevoAsiento);
 
+    // Actualizar estado local
+    updateState({
+      cxp: [...(state.cxp || []), nuevaDeuda],
+      libroDiario: [nuevoAsiento, ...(state.libroDiario || [])]
+    });
+
     toast({
       title: "Deuda registrada",
       description: `Se ha registrado la deuda de ${Utils.fmtUSD(monto)} a ${selectedProveedor}`
@@ -208,6 +216,7 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
     setDeudaMotivo('');
     setProveedorSearch('');
     setFechaDeuda(Utils.hoy());
+    setFechaVencimiento(Utils.hoy());
   };
 
   return (
@@ -317,10 +326,10 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
                  </div>
               </div>
 
-              {showDetails.motivo && (
+              {showDetails.concepto && (
                 <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
                   <label className="text-[8px] font-black uppercase text-blue-600 block mb-1">Motivo de la Deuda Directa</label>
-                  <p className="text-sm font-black text-ink">{showDetails.motivo}</p>
+                  <p className="text-sm font-black text-ink">{showDetails.concepto}</p>
                 </div>
               )}
 
@@ -340,10 +349,10 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
                         </tr>
                       </thead>
                       <tbody>
-                        {(showDetails.items || []).length === 0 && !showDetails.motivo && (
+                        {(showDetails.items || []).length === 0 && !showDetails.concepto && (
                           <tr><td colSpan={4} className="py-8 text-center text-ink font-black uppercase italic text-[9px]">Sin detalles de ítems registrados</td></tr>
                         )}
-                        {(showDetails.items || []).length === 0 && showDetails.motivo && (
+                        {(showDetails.items || []).length === 0 && showDetails.concepto && (
                           <tr><td colSpan={4} className="py-8 text-center text-ink font-black uppercase italic text-[9px]">Deuda directa sin ítems asociados</td></tr>
                         )}
                         {(showDetails.items || []).map((it: any, idx: number) => (
@@ -500,6 +509,7 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
                     <p className="text-sm font-black text-ink">{selectedProveedor}</p>
                   </div>
 
+                  {/* Fecha de la Deuda */}
                   <div className="form-group">
                     <label className="text-ink text-[10px] font-black uppercase block mb-1">Fecha de la Deuda</label>
                     <input 
@@ -510,6 +520,24 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
                     />
                   </div>
 
+                  {/* Fecha de Vencimiento */}
+                  <div className="form-group">
+                    <label className="text-ink text-[10px] font-black uppercase block mb-1 flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-status-warn" />
+                      Fecha de Vencimiento
+                    </label>
+                    <input 
+                      type="date" 
+                      className="form-input h-11 text-sm font-black text-ink w-full border-status-warn/30 focus:border-status-warn" 
+                      value={fechaVencimiento}
+                      onChange={e => setFechaVencimiento(e.target.value)}
+                    />
+                    <p className="text-[8px] font-black text-ink/40 mt-1">
+                      Fecha límite para realizar el pago
+                    </p>
+                  </div>
+
+                  {/* Monto */}
                   <div className="form-group">
                     <label className="text-ink text-[10px] font-black uppercase block mb-1">Monto (USD)</label>
                     <div className="relative">
@@ -524,6 +552,7 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
                     </div>
                   </div>
 
+                  {/* Motivo */}
                   <div className="form-group">
                     <label className="text-ink text-[10px] font-black uppercase block mb-1">Motivo de la Deuda</label>
                     <textarea 

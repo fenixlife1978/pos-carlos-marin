@@ -47,6 +47,18 @@ import GlobalControlModule from '@/components/modules/GlobalControlModule';
 import SuppliersModule from '@/components/modules/SuppliersModule';
 import AccountingModule from '@/components/modules/AccountingModule';
 
+// ============================================================
+// IMPORT CACHÉ DE PRODUCTOS
+// ============================================================
+import { cacheProductos, getProductosFromCache, clearProductosCache } from '@/lib/cache-utils';
+
+// ============================================================
+// IMPORT OFFLINE QUEUE
+// ============================================================
+import { getQueue, processQueue } from '@/lib/offline-queue';
+import { updateStockRTDB, incrementarReciboRTDB } from '@/lib/rtdb-utils';
+import { toast } from '@/hooks/use-toast';
+
 export default function LicoreriaPOS() {
   const router = useRouter();
   const [state, setState] = useState<AppState>(initialState);
@@ -96,11 +108,23 @@ export default function LicoreriaPOS() {
       unsubscribes.current.forEach(unsub => unsub());
       unsubscribes.current = [];
 
-      // Productos (todos activos)
+      // 🔑 PRODUCTOS - CON CACHÉ
       const unsubProducts = Collections.subscribeAll('productos', (list) => {
+        // Guardar en caché cuando se reciben productos
+        if (list.length > 0) {
+          cacheProductos(list);
+          console.log('📦 Productos guardados en caché (Firestore)');
+        }
         setState(prev => ({ ...prev, productos: list }) as AppState);
       });
       unsubscribes.current.push(unsubProducts);
+
+      // Intenta cargar productos desde caché mientras Firestore responde
+      const cachedProducts = getProductosFromCache();
+      if (cachedProducts && cachedProducts.length > 0) {
+        console.log('📦 Productos cargados desde caché local');
+        setState(prev => ({ ...prev, productos: cachedProducts }) as AppState);
+      }
 
       // Terminales
       const unsubTerminals = Collections.subscribeAll('terminales', (list) => {
@@ -273,6 +297,57 @@ export default function LicoreriaPOS() {
       clearTimeout(timerSafety);
     };
   }, [router, loading]);
+
+  // ============================================================
+  // SINCRONIZACIÓN DE COLA OFFLINE
+  // ============================================================
+  useEffect(() => {
+    const syncOfflineSales = async () => {
+      const queue = getQueue();
+      if (queue.length === 0) return;
+      
+      console.log(`🔄 Sincronizando ${queue.length} ventas offline...`);
+      
+      toast({
+        title: "🔄 Sincronizando ventas offline",
+        description: `${queue.length} ventas pendientes...`,
+        duration: 3000
+      });
+      
+      const processed = await processQueue(async (data) => {
+        // Procesar cada venta offline
+        await Collections.set('ventas', data.venta.id, data.venta);
+        await Collections.set('libroDiario', data.asiento.id, data.asiento);
+        await updateStockRTDB(data.itemsParaStock);
+        await incrementarReciboRTDB(data.terminalId);
+      });
+      
+      if (processed > 0) {
+        toast({
+          title: "✅ Ventas sincronizadas",
+          description: `${processed} ventas offline procesadas correctamente.`,
+          duration: 5000
+        });
+      }
+    };
+    
+    // Escuchar reconexión
+    const handleOnline = () => {
+      syncOfflineSales();
+    };
+    
+    window.addEventListener('online', handleOnline);
+    
+    // También sincronizar al cargar la página
+    if (typeof window !== 'undefined' && navigator.onLine) {
+      // Esperar un momento para que todo esté listo
+      setTimeout(syncOfflineSales, 3000);
+    }
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+    };
+  }, []);
 
   // LÓGICA DE NOTIFICACIONES CXP (CADA 6 HORAS / 72H VENCIMIENTO)
   useEffect(() => {

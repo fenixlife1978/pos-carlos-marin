@@ -9,6 +9,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 
+// ============================================================
+// IMPORT RTDB
+// ============================================================
+import { initStockRTDB } from '@/lib/rtdb-utils';
+
 interface ProductFormModalProps {
   producto?: Product;
   state: AppState;
@@ -108,7 +113,7 @@ export function ProductFormModal({ producto, state, onClose, onSave, onUpdateLis
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!datos.nombre || !datos.codigo) return alert('Nombre y Código requeridos');
     
     const existe = state.productos.find(p => p.activo && p.codigo === datos.codigo && p.id !== producto?.id);
@@ -117,14 +122,28 @@ export function ProductFormModal({ producto, state, onClose, onSave, onUpdateLis
       return;
     }
 
-    onSave({
+    const productData = {
       ...datos,
       costoUSD: parseFloat(datos.costoUSD) || 0,
       margen: parseFloat(datos.margen) || 0,
       precioUSD: parseFloat(datos.precioUSD) || 0,
       stock: parseFloat(datos.stock) || 0,
       stockMinimo: parseFloat(datos.stockMinimo) || 0
-    });
+    };
+
+    // Guardar producto en Firestore
+    await onSave(productData);
+
+    // 🔑 INICIALIZAR STOCK EN RTDB (solo si es producto nuevo, no edición)
+    if (!producto) {
+      try {
+        const productId = productData.id || Store.uid();
+        await initStockRTDB(productId, productData.stock || 0);
+        console.log(`✅ Stock inicializado en RTDB para producto: ${productData.nombre}`);
+      } catch (error) {
+        console.error('Error al inicializar stock en RTDB:', error);
+      }
+    }
   };
 
   return (

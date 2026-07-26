@@ -21,6 +21,11 @@ import {
 } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 
+// ============================================================
+// IMPORT RTDB
+// ============================================================
+import { restoreStockRTDB } from '@/lib/rtdb-utils';
+
 export default function ReturnsModule({ state, updateState, onBackToPOS, terminalId }: { state: AppState, updateState: (s: Partial<AppState>) => void, onBackToPOS: () => void, terminalId?: string }) {
   const [view, setView] = useState<'list' | 'create'>('list');
   const [saleSearch, setSaleSearch] = useState('');
@@ -96,13 +101,28 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
         terminalId: terminalId || 'GLOBAL'
       };
 
-      // ===== ACTUALIZAR PRODUCTOS (STOCK) =====
+      // ===== ACTUALIZAR STOCK EN RTDB Y FIRESTORE =====
+      const itemsParaRestaurar: { productoId: string, cantidad: number }[] = [];
+      
       for (const item of returnItems) {
         const producto = state.productos.find(p => p.id === item.productoId);
         if (producto && item.estadoProducto === 'REINTEGRADO_STOCK') {
+          // 🔑 Guardar para restaurar en RTDB
+          itemsParaRestaurar.push({
+            productoId: item.productoId,
+            cantidad: item.cantidad
+          });
+          
+          // También actualizar en Firestore (para mantener consistencia)
           const productoActualizado = { ...producto, stock: producto.stock + item.cantidad };
           await Collections.set('productos', producto.id, productoActualizado);
         }
+      }
+
+      // 🔑 RESTAURAR STOCK EN RTDB
+      if (itemsParaRestaurar.length > 0) {
+        await restoreStockRTDB(itemsParaRestaurar);
+        console.log(`✅ Stock restaurado en RTDB para ${itemsParaRestaurar.length} productos`);
       }
 
       // ===== GUARDAR MOVIMIENTOS =====
@@ -198,13 +218,28 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
       const nextNum = terminal?.proximaAnulacion || 1;
       const idAnu = 'ANU-' + String(nextNum).padStart(5, '0');
 
-      // ===== ACTUALIZAR PRODUCTOS (STOCK) =====
+      // ===== ACTUALIZAR STOCK EN RTDB Y FIRESTORE =====
+      const itemsParaRestaurar: { productoId: string, cantidad: number }[] = [];
+      
       for (const item of selectedSale.items) {
         const producto = state.productos.find(p => p.id === item.productoId);
         if (producto) {
+          // 🔑 Guardar para restaurar en RTDB
+          itemsParaRestaurar.push({
+            productoId: item.productoId,
+            cantidad: item.cantidad
+          });
+          
+          // También actualizar en Firestore (para mantener consistencia)
           const productoActualizado = { ...producto, stock: producto.stock + item.cantidad };
           await Collections.set('productos', producto.id, productoActualizado);
         }
+      }
+
+      // 🔑 RESTAURAR STOCK EN RTDB
+      if (itemsParaRestaurar.length > 0) {
+        await restoreStockRTDB(itemsParaRestaurar);
+        console.log(`✅ Stock restaurado en RTDB para ${itemsParaRestaurar.length} productos (anulación)`);
       }
 
       // ===== GUARDAR MOVIMIENTOS =====

@@ -5,9 +5,10 @@ import { AppState } from '@/lib/types';
 import { Save, AlertTriangle, RefreshCw } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { initialState, Store } from '@/lib/db-store';
-import { db, auth } from '@/lib/firebase';
+import { db, auth, rtdb } from '@/lib/firebase';
 import { collection, getDocs, deleteDoc, doc, setDoc, writeBatch, query, limit } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
+import { ref, remove } from 'firebase/database';
 
 export default function ConfigModule({ state, updateState }: { state: AppState, updateState: (s: Partial<AppState>) => void }) {
   const [tasa, setTasa] = useState<string | number>(state.tasa || 36.50);
@@ -91,6 +92,21 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
     }
   };
 
+  // ============================================================
+  // FUNCIÓN PARA LIMPIAR RTDB
+  // ============================================================
+  const limpiarRTDB = async () => {
+    try {
+      console.log('🗑️ Limpiando Realtime Database...');
+      await remove(ref(rtdb));
+      console.log('✅ Realtime Database limpiada completamente.');
+      return true;
+    } catch (error) {
+      console.warn('⚠️ Error al limpiar RTDB:', error);
+      return false;
+    }
+  };
+
   const formatearSistema = async () => {
     const confirmMsg = 
       '⚠️ ¿ESTÁ ABSOLUTAMENTE SEGURO?\n\n' +
@@ -100,7 +116,8 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
       '✅ TODOS los clientes y proveedores.\n' +
       '✅ TODOS los movimientos y asientos contables.\n' +
       '✅ TODOS los usuarios y sus credenciales.\n' +
-      '✅ TODOS los reportes y configuraciones.\n\n' +
+      '✅ TODOS los reportes y configuraciones.\n' +
+      '✅ TODOS los datos de la Realtime Database.\n\n' +
       '⚠️ ESTA ACCIÓN NO SE PUEDE DESHACER.';
 
     if (!confirm(confirmMsg)) return;
@@ -110,7 +127,7 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
     // Mostrar toast de inicio
     toast({ 
       title: "⏳ Formateando sistema...", 
-      description: "Eliminando todos los datos. Esto puede tomar unos segundos.",
+      description: "Eliminando todos los datos (Firestore + RTDB). Esto puede tomar unos segundos.",
       duration: 3000
     });
 
@@ -143,6 +160,9 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
       await Promise.all(deletePromises);
       
       console.log('✅ Todas las colecciones eliminadas.');
+
+      // ===== LIMPIAR RTDB =====
+      await limpiarRTDB();
 
       // Reiniciar configuración global
       const configRef = doc(db, 'config', 'global');
@@ -182,7 +202,7 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
 
       toast({ 
         title: "✅ Sistema Formateado", 
-        description: "Todos los datos han sido eliminados. Redirigiendo al login...",
+        description: "Todos los datos (Firestore + RTDB) han sido eliminados. Redirigiendo al login...",
         duration: 2000
       });
 
