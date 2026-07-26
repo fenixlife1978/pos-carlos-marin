@@ -63,14 +63,12 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
   };
 
   // ============================================================
-  // FUNCIÓN MEJORADA PARA ELIMINAR UNA COLECCIÓN COMPLETA
+  // FUNCIÓN RÁPIDA PARA ELIMINAR UNA COLECCIÓN COMPLETA
   // ============================================================
-  const deleteCollection = async (collectionPath: string, batchSize = 100) => {
+  const deleteCollection = async (collectionPath: string) => {
     try {
       const colRef = collection(db, collectionPath);
-      
-      // Verificar si la colección existe y tiene datos
-      const snapshot = await getDocs(query(colRef, limit(1)));
+      const snapshot = await getDocs(colRef);
       
       if (snapshot.empty) {
         console.log(`✅ Colección "${collectionPath}" vacía o no existe.`);
@@ -79,24 +77,13 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
 
       let totalDeleted = 0;
       
-      while (true) {
-        const batch = writeBatch(db);
-        const docsToDelete = await getDocs(query(colRef, limit(batchSize)));
-        
-        if (docsToDelete.empty) {
-          break;
-        }
-        
-        docsToDelete.forEach((docSnap) => {
-          batch.delete(docSnap.ref);
-        });
-        
-        await batch.commit();
-        totalDeleted += docsToDelete.size;
-        console.log(`🗑️ Eliminados ${totalDeleted} documentos de "${collectionPath}"`);
+      // Eliminar documentos uno por uno (más rápido que batch para este caso)
+      for (const docSnap of snapshot.docs) {
+        await deleteDoc(docSnap.ref);
+        totalDeleted++;
       }
       
-      console.log(`✅ Colección "${collectionPath}" eliminada completamente (${totalDeleted} docs).`);
+      console.log(`✅ Colección "${collectionPath}" eliminada (${totalDeleted} docs).`);
       return totalDeleted;
     } catch (error) {
       console.warn(`⚠️ Error al eliminar colección "${collectionPath}":`, error);
@@ -120,11 +107,18 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
 
     setIsFormatting(true);
     
+    // Mostrar toast de inicio
+    toast({ 
+      title: "⏳ Formateando sistema...", 
+      description: "Eliminando todos los datos. Esto puede tomar unos segundos.",
+      duration: 3000
+    });
+
     try {
-      // Lista de colecciones a eliminar
+      // Lista de colecciones a eliminar (en orden de prioridad)
       const colecciones = [
-        'productos',
         'ventas',
+        'productos',
         'clientes',
         'cxc',
         'cxp',
@@ -142,9 +136,9 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
         'pos_system_data'
       ];
 
-      console.log('🗑️ Iniciando eliminación de colecciones...');
+      console.log('🗑️ Iniciando eliminación rápida de colecciones...');
       
-      // Eliminar colecciones en paralelo para mayor velocidad
+      // Eliminar colecciones en paralelo (más rápido)
       const deletePromises = colecciones.map(colName => deleteCollection(colName));
       await Promise.all(deletePromises);
       
@@ -177,7 +171,7 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
         marcas: ['Genérica'],
         presentaciones: ['750ml', '1L', 'Unidad', 'Caja']
       });
-      console.log('✅ Configuración global reiniciada en config/global.');
+      console.log('✅ Configuración global reiniciada.');
 
       // Limpiar almacenamiento local
       if (typeof sessionStorage !== 'undefined') sessionStorage.clear();
@@ -187,29 +181,34 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
       }
 
       toast({ 
-        title: "Sistema Formateado", 
-        description: "Todos los datos han sido eliminados permanentemente." 
+        title: "✅ Sistema Formateado", 
+        description: "Todos los datos han sido eliminados. Redirigiendo al login...",
+        duration: 2000
       });
 
-      // Cerrar sesión y redirigir al login
+      // Cerrar sesión INMEDIATAMENTE sin esperar
       try {
         await signOut(auth);
       } catch (e) {
         console.warn('⚠️ Error al cerrar sesión:', e);
       }
 
-      // Redirigir después de un breve delay para que Firebase complete las operaciones
-      setTimeout(() => {
-        window.location.href = '/login';
-      }, 500);
+      // Redirigir al login inmediatamente
+      window.location.href = '/login';
 
     } catch (error: any) {
       console.error("❌ Error en formateo:", error);
       toast({ 
         variant: "destructive", 
-        title: "Fallo en Limpieza", 
-        description: error.message || "Hubo un error al formatear el sistema. Intente nuevamente." 
+        title: "❌ Fallo en Limpieza", 
+        description: error.message || "Hubo un error. Intente nuevamente." 
       });
+      
+      // Incluso si hay error, intentar redirigir
+      try {
+        await signOut(auth);
+      } catch (e) {}
+      window.location.href = '/login';
     } finally {
       setIsFormatting(false);
     }
