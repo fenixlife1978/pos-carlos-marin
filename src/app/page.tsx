@@ -77,6 +77,15 @@ export default function LicoreriaPOS() {
   const [dueDebts, setDueDebts] = useState<Debt[]>([]);
   const [showCxPAlert, setShowCxPAlert] = useState(false);
   
+  // ============================================================
+  // ALERTAS DE VENCIMIENTO (24 HORAS) - CxC + CxP
+  // ============================================================
+  const [dueAlerts, setDueAlerts] = useState<{
+    cxp: Debt[];
+    cxc: Debt[];
+  }>({ cxp: [], cxc: [] });
+  const [showDueAlert, setShowDueAlert] = useState(false);
+  
   const moduleInitialized = useRef(false);
   const unsubscribes = useRef<(() => void)[]>([]);
 
@@ -110,7 +119,6 @@ export default function LicoreriaPOS() {
 
       // 🔑 PRODUCTOS - CON CACHÉ
       const unsubProducts = Collections.subscribeAll('productos', (list) => {
-        // Guardar en caché cuando se reciben productos
         if (list.length > 0) {
           cacheProductos(list);
           console.log('📦 Productos guardados en caché (Firestore)');
@@ -119,68 +127,57 @@ export default function LicoreriaPOS() {
       });
       unsubscribes.current.push(unsubProducts);
 
-      // Intenta cargar productos desde caché mientras Firestore responde
       const cachedProducts = getProductosFromCache();
       if (cachedProducts && cachedProducts.length > 0) {
         console.log('📦 Productos cargados desde caché local');
         setState(prev => ({ ...prev, productos: cachedProducts }) as AppState);
       }
 
-      // Terminales
       const unsubTerminals = Collections.subscribeAll('terminales', (list) => {
         setState(prev => ({ ...prev, terminales: list }) as AppState);
       });
       unsubscribes.current.push(unsubTerminals);
 
-      // Ventas (solo las del terminal actual)
       const unsubSales = Collections.subscribeWhere('ventas', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
         setState(prev => ({ ...prev, ventas: list }) as AppState);
       });
       unsubscribes.current.push(unsubSales);
 
-      // Clientes (todos)
       const unsubClients = Collections.subscribeAll('clientes', (list) => {
         setState(prev => ({ ...prev, clientes: list }) as AppState);
       });
       unsubscribes.current.push(unsubClients);
 
-      // CxC (todos)
       const unsubCxc = Collections.subscribeAll('cxc', (list) => {
         setState(prev => ({ ...prev, cxc: list }) as AppState);
       });
       unsubscribes.current.push(unsubCxc);
 
-      // CxP (todos)
       const unsubCxp = Collections.subscribeAll('cxp', (list) => {
         setState(prev => ({ ...prev, cxp: list }) as AppState);
       });
       unsubscribes.current.push(unsubCxp);
 
-      // Movimientos (solo del terminal actual)
       const unsubMov = Collections.subscribeWhere('movimientos', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
         setState(prev => ({ ...prev, movimientos: list }) as AppState);
       });
       unsubscribes.current.push(unsubMov);
 
-      // Libro diario (todos, se filtrará por terminalId en el componente)
       const unsubDiario = Collections.subscribeAll('libroDiario', (list) => {
         setState(prev => ({ ...prev, libroDiario: list }) as AppState);
       });
       unsubscribes.current.push(unsubDiario);
 
-      // Devoluciones (solo del terminal)
       const unsubDev = Collections.subscribeWhere('devoluciones', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
         setState(prev => ({ ...prev, devoluciones: list }) as AppState);
       });
       unsubscribes.current.push(unsubDev);
 
-      // Anulaciones (solo del terminal)
       const unsubAnu = Collections.subscribeWhere('anulaciones', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
         setState(prev => ({ ...prev, anulaciones: list }) as AppState);
       });
       unsubscribes.current.push(unsubAnu);
 
-      // Reportes Z (solo del terminal)
       const unsubZ = Collections.subscribeWhere('reportesZ', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
         setState(prev => ({ ...prev, reportesZ: list }) as AppState);
       });
@@ -195,7 +192,6 @@ export default function LicoreriaPOS() {
       }
 
       try {
-        // Obtener perfil del usuario
         const userDocRef = doc(db, 'users', currentUser.uid);
         const userDocSnap = await getDoc(userDocRef);
         
@@ -214,7 +210,6 @@ export default function LicoreriaPOS() {
           return;
         }
 
-        // 🔑 CARGAR TERMINALES DE FORMA SÍNCRONA antes de verificar
         let terminal = null;
         if (data.rol === 'cajero') {
           const terminalsSnapshot = await getDocs(collection(db, 'terminales'));
@@ -231,20 +226,16 @@ export default function LicoreriaPOS() {
 
         const terminalId = terminal?.id || 'GLOBAL';
 
-        // Iniciar suscripciones a colecciones
         setupSubscriptions(terminalId);
 
-        // Configurar estado de usuario
         setUser(currentUser);
         setUserRole(data.rol);
         setUserProfile(data);
 
-        // Actualizar estado con terminales (para que el cajero pueda verlos)
         if (data.rol === 'cajero' && terminal) {
           setState(prev => ({ ...prev, terminales: [terminal] }) as AppState);
         }
 
-        // Verificar apertura de caja si es cajero
         if (data.rol === 'cajero') {
           const aperturaConfirmada = localStorage.getItem('posven_apertura_done') === 'true';
           setShowApertura(!aperturaConfirmada);
@@ -252,7 +243,6 @@ export default function LicoreriaPOS() {
           setShowApertura(false);
         }
 
-        // Módulo inicial
         if (!moduleInitialized.current) {
           const savedModule = sessionStorage.getItem('posven_active_module');
           const target = data.rol === 'cajero' 
@@ -315,7 +305,6 @@ export default function LicoreriaPOS() {
       });
       
       const processed = await processQueue(async (data) => {
-        // Procesar cada venta offline
         await Collections.set('ventas', data.venta.id, data.venta);
         await Collections.set('libroDiario', data.asiento.id, data.asiento);
         await updateStockRTDB(data.itemsParaStock);
@@ -331,16 +320,13 @@ export default function LicoreriaPOS() {
       }
     };
     
-    // Escuchar reconexión
     const handleOnline = () => {
       syncOfflineSales();
     };
     
     window.addEventListener('online', handleOnline);
     
-    // También sincronizar al cargar la página
     if (typeof window !== 'undefined' && navigator.onLine) {
-      // Esperar un momento para que todo esté listo
       setTimeout(syncOfflineSales, 3000);
     }
     
@@ -349,7 +335,53 @@ export default function LicoreriaPOS() {
     };
   }, []);
 
-  // LÓGICA DE NOTIFICACIONES CXP (CADA 6 HORAS / 72H VENCIMIENTO)
+  // ============================================================
+  // ALERTAS DE VENCIMIENTO (24 HORAS) - CxC + CxP
+  // ============================================================
+  useEffect(() => {
+    const checkDueDocuments = () => {
+      const now = new Date();
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      tomorrow.setHours(23, 59, 59, 999);
+
+      // CxP (Proveedores)
+      const cxpVencidas = (state.cxp || []).filter(d => {
+        if (d.estado === 'pagada') return false;
+        const dueDate = new Date(d.fechaVencimiento + 'T23:59:59');
+        return dueDate <= tomorrow && dueDate >= now;
+      });
+
+      // CxC (Clientes) - Excluir deudas abiertas (2099-12-31)
+      const cxcVencidas = (state.cxc || []).filter(d => {
+        if (d.estado === 'pagada') return false;
+        if (d.fechaVencimiento === '2099-12-31') return false;
+        const dueDate = new Date(d.fechaVencimiento + 'T23:59:59');
+        return dueDate <= tomorrow && dueDate >= now;
+      });
+
+      const hasAlerts = cxpVencidas.length > 0 || cxcVencidas.length > 0;
+
+      if (hasAlerts && userRole === 'administrador') {
+        setDueAlerts({ cxp: cxpVencidas, cxc: cxcVencidas });
+        
+        const lastAlert = localStorage.getItem('posven_due_alert');
+        const fiveMinutes = 5 * 60 * 1000;
+        
+        if (!lastAlert || (Date.now() - parseInt(lastAlert)) > fiveMinutes) {
+          setShowDueAlert(true);
+          localStorage.setItem('posven_due_alert', Date.now().toString());
+        }
+      }
+    };
+
+    checkDueDocuments();
+    const interval = setInterval(checkDueDocuments, 60000);
+    
+    return () => clearInterval(interval);
+  }, [state.cxp, state.cxc, userRole]);
+
+  // LÓGICA DE NOTIFICACIONES CXP (CADA 6 HORAS / 72H VENCIMIENTO) - PARA COMPATIBILIDAD
   useEffect(() => {
     if (!state.cxp || state.cxp.length === 0 || userRole !== 'administrador') return;
 
@@ -424,7 +456,6 @@ export default function LicoreriaPOS() {
   const updateState = (newState: Partial<AppState>) => {
     setState(prev => {
       const updated = { ...prev, ...newState } as AppState;
-      // Solo guardar configuración en Store (los datos transaccionales van por Collections)
       Store.set(updated);
       return updated;
     });
@@ -440,6 +471,8 @@ export default function LicoreriaPOS() {
     localStorage.setItem('posven_last_cxp_alert', Date.now().toString());
     setShowCxPAlert(false);
   };
+
+  const totalAlerts = dueAlerts.cxp.length + dueAlerts.cxc.length;
 
   const menuGroups = [
     {
@@ -708,13 +741,13 @@ export default function LicoreriaPOS() {
           <div className="flex items-center gap-3 ml-auto">
             {!isCajero && (
               <button 
-                onClick={() => dueDebts.length > 0 && setShowCxPAlert(true)}
+                onClick={() => totalAlerts > 0 && setShowDueAlert(true)}
                 className="relative w-[38px] h-[38px] rounded-[10px] bg-white border border-line flex items-center justify-center text-ink hover:text-brand-gold transition-colors shadow-sm-card"
               >
-                <Bell className={`w-4 h-4 ${dueDebts.length > 0 ? 'text-brand-gold animate-bounce' : ''}`} />
-                {dueDebts.length > 0 && (
+                <Bell className={`w-4 h-4 ${totalAlerts > 0 ? 'text-brand-gold animate-bounce' : ''}`} />
+                {totalAlerts > 0 && (
                   <span className="absolute -top-1 -right-1 w-5 h-5 bg-status-danger text-white rounded-full flex items-center justify-center text-[9px] font-black border-2 border-white">
-                    {dueDebts.length}
+                    {totalAlerts}
                   </span>
                 )}
               </button>
@@ -747,6 +780,117 @@ export default function LicoreriaPOS() {
 
       {isSidebarOpen && (
         <div className="fixed inset-0 bg-black/60 z-[45] backdrop-blur-sm" onClick={() => setIsSidebarOpen(false)} />
+      )}
+
+      {/* ============================================================
+        MODAL DE ALERTA DE VENCIMIENTO (CxC + CxP)
+      ============================================================ */}
+      {showDueAlert && (
+        <div className="modal show" style={{ zIndex: 9999 }}>
+          <div className="modal-bg" onClick={() => setShowDueAlert(false)} />
+          <div className="modal-box max-w-2xl bg-white border-2 border-line rounded-[32px] overflow-hidden shadow-2xl animate-in zoom-in duration-300">
+            <div className="modal-head py-5 px-8 bg-ink border-b border-white/10 flex justify-between items-center text-white">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-brand-gold rounded-xl flex items-center justify-center text-black shadow-lg">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-black text-sm uppercase italic tracking-widest">⚠️ Documentos por Vencer</h3>
+                  <p className="text-[9px] font-bold text-white/40 uppercase tracking-tighter">
+                    {totalAlerts} documento(s) vencen en las próximas 24 horas
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setShowDueAlert(false)} className="text-white/20 hover:text-white transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="modal-body p-6 space-y-6 bg-white max-h-[60vh] overflow-y-auto">
+              
+              {/* Cuentas por Pagar (Proveedores) */}
+              {dueAlerts.cxp.length > 0 && (
+                <div>
+                  <h4 className="text-[10px] font-black uppercase text-ink/60 mb-3 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-status-danger" />
+                    Cuentas por Pagar ({dueAlerts.cxp.length})
+                  </h4>
+                  <div className="space-y-2">
+                    {dueAlerts.cxp.map(d => {
+                      const diff = new Date(d.fechaVencimiento + 'T23:59:59').getTime() - Date.now();
+                      const horas = Math.ceil(diff / (1000 * 60 * 60));
+                      return (
+                        <div key={d.id} className="p-3 bg-status-danger-soft border border-status-danger/20 rounded-xl flex justify-between items-center">
+                          <div>
+                            <p className="text-[10px] font-black text-ink uppercase">{d.proveedor}</p>
+                            <p className="text-[9px] font-bold text-ink/60">Ref: {d.numeroFactura || d.id}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-sm font-black text-status-danger">{Utils.fmtUSD(d.saldoUSD)}</p>
+                            <p className="text-[8px] font-black text-ink/40 uppercase">
+                              {horas <= 0 ? 'VENCE HOY' : `Vence en ${horas}h`}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Cuentas por Cobrar (Clientes) */}
+              {dueAlerts.cxc.length > 0 && (
+                <div>
+                  <h4 className="text-[10px] font-black uppercase text-ink/60 mb-3 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-status-warn" />
+                    Cuentas por Cobrar ({dueAlerts.cxc.length})
+                  </h4>
+                  <div className="space-y-2">
+                    {dueAlerts.cxc.map(d => {
+                      const diff = new Date(d.fechaVencimiento + 'T23:59:59').getTime() - Date.now();
+                      const horas = Math.ceil(diff / (1000 * 60 * 60));
+                      return (
+                        <div key={d.id} className="p-3 bg-status-warn-soft border border-status-warn/20 rounded-xl flex justify-between items-center">
+                          <div>
+                            <p className="text-[10px] font-black text-ink uppercase">{d.cliente}</p>
+                            <p className="text-[9px] font-bold text-ink/60">Ref: {d.id}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-sm font-black text-status-warn">{Utils.fmtUSD(d.saldoUSD)}</p>
+                            <p className="text-[8px] font-black text-ink/40 uppercase">
+                              {horas <= 0 ? 'VENCE HOY' : `Vence en ${horas}h`}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {totalAlerts === 0 && (
+                <div className="py-10 text-center text-ink/40 font-black uppercase italic text-[10px]">
+                  No hay documentos por vencer. ¡Todo en orden! ✅
+                </div>
+              )}
+
+              <div className="bg-ink/5 p-3 rounded-xl border border-line text-center">
+                <p className="text-[8px] font-black text-ink/40 uppercase tracking-widest">
+                  Este recordatorio se muestra cada 5 minutos hasta que se liquiden las deudas.
+                </p>
+              </div>
+            </div>
+
+            <div className="modal-foot p-4 bg-surface-soft border-t border-line flex justify-end">
+              <button 
+                onClick={() => setShowDueAlert(false)}
+                className="btn btn-primary px-8 font-black uppercase text-[10px] rounded-lg shadow-md"
+              >
+                Entendido
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {showCxPAlert && (

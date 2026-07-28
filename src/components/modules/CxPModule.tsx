@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AppState, LibroDiarioEntry, PaymentMethod, Debt } from '@/lib/types';
 import { Utils, Store, Collections } from '@/lib/db-store';
 import { 
@@ -18,7 +18,9 @@ import {
   DollarSign,
   FilePlus,
   Save,
-  Clock
+  Clock,
+  Bell,
+  AlertTriangle
 } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { exportarPDFCxP } from '@/lib/pdf-generator';
@@ -42,6 +44,43 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
   const [deudaMotivo, setDeudaMotivo] = useState('');
   const [fechaDeuda, setFechaDeuda] = useState(Utils.hoy());
   const [fechaVencimiento, setFechaVencimiento] = useState(Utils.hoy());
+
+  // ============================================================
+  // ALERTAS DE VENCIMIENTO (24 HORAS)
+  // ============================================================
+  const [vencimientosProximos, setVencimientosProximos] = useState<Debt[]>([]);
+  const [showVencimientoAlert, setShowVencimientoAlert] = useState(false);
+
+  useEffect(() => {
+    const checkVencimientos = () => {
+      const now = new Date();
+      const manana = new Date();
+      manana.setDate(manana.getDate() + 1);
+      manana.setHours(23, 59, 59, 999);
+
+      const proximos = (state.cxp || []).filter(d => {
+        if (d.estado === 'pagada') return false;
+        const dueDate = new Date(d.fechaVencimiento + 'T23:59:59');
+        return dueDate <= manana && dueDate >= now;
+      });
+
+      setVencimientosProximos(proximos);
+
+      if (proximos.length > 0) {
+        const lastAlert = localStorage.getItem('posven_cxp_vencimiento_alert');
+        const unaHora = 60 * 60 * 1000;
+        
+        if (!lastAlert || (Date.now() - parseInt(lastAlert)) > unaHora) {
+          setShowVencimientoAlert(true);
+          localStorage.setItem('posven_cxp_vencimiento_alert', Date.now().toString());
+        }
+      }
+    };
+
+    checkVencimientos();
+    const interval = setInterval(checkVencimientos, 60000);
+    return () => clearInterval(interval);
+  }, [state.cxp]);
 
   const pendientes = (state.cxp || []).filter((x: Debt) => x.estado !== 'pagada');
   const totalPendiente = pendientes.reduce((s: number, x: Debt) => s + x.saldoUSD, 0);
@@ -166,7 +205,6 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
       return;
     }
 
-    // 🔑 CORREGIDO: usar 'concepto' en lugar de 'motivo'
     const nuevaDeuda: Debt = {
       id: 'CXP-' + Store.uid().toUpperCase().slice(0, 6),
       fecha: fechaDeuda,
@@ -179,7 +217,7 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
       estado: 'pendiente' as 'pendiente',
       historialPagos: [],
       items: [],
-      concepto: deudaMotivo  // ✅ Campo correcto según el tipo Debt
+      concepto: deudaMotivo
     };
 
     await Collections.set('cxp', nuevaDeuda.id, nuevaDeuda);
@@ -221,17 +259,93 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
 
   return (
     <div className="space-y-6">
+      {/* ============================================================
+        ALERTA DE VENCIMIENTO (24 HORAS)
+      ============================================================ */}
+      {showVencimientoAlert && vencimientosProximos.length > 0 && (
+        <div className="modal show" style={{ zIndex: 9999 }}>
+          <div className="modal-bg" onClick={() => setShowVencimientoAlert(false)} />
+          <div className="modal-box max-w-lg bg-white border-2 border-status-danger/30 rounded-[32px] overflow-hidden shadow-2xl animate-in zoom-in duration-300">
+            <div className="modal-head py-5 px-8 bg-status-danger border-b border-status-danger/20 flex justify-between items-center text-white">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center shadow-lg">
+                  <AlertTriangle className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h3 className="font-black text-sm uppercase italic tracking-widest">⚠️ Vencimiento Próximo</h3>
+                  <p className="text-[9px] font-bold text-white/70 uppercase tracking-tighter">
+                    {vencimientosProximos.length} factura(s) vencen en las próximas 24 horas
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setShowVencimientoAlert(false)} className="text-white/40 hover:text-white transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="modal-body p-6 space-y-4 bg-white max-h-[60vh] overflow-y-auto">
+              {vencimientosProximos.map((d, idx) => {
+                const diff = new Date(d.fechaVencimiento + 'T23:59:59').getTime() - Date.now();
+                const horas = Math.ceil(diff / (1000 * 60 * 60));
+                return (
+                  <div key={idx} className="p-4 bg-status-danger-soft border border-status-danger/20 rounded-2xl flex items-center justify-between group hover:border-status-danger transition-all">
+                    <div className="space-y-1">
+                      <p className="text-[10px] font-black text-ink uppercase">{d.proveedor}</p>
+                      <div className="flex items-center gap-2">
+                        <span className="badge badge-neutral text-[8px] font-black uppercase">Ref: {d.numeroFactura || d.id.slice(-6)}</span>
+                        <span className="flex items-center gap-1 text-[9px] font-bold text-status-danger uppercase">
+                          <Clock className="w-3 h-3" /> {horas <= 0 ? 'VENCE HOY' : `Vence en ${horas}h`}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-lg font-black text-status-danger">{Utils.fmtUSD(d.saldoUSD)}</p>
+                      <p className="text-[9px] font-bold text-ink/40 uppercase italic">Saldo Pendiente</p>
+                    </div>
+                  </div>
+                );
+              })}
+              <div className="bg-ink/5 p-3 rounded-xl border border-line text-center">
+                <p className="text-[8px] font-black text-ink/40 uppercase tracking-widest">
+                  Este recordatorio se mostrará una vez por hora hasta que se liquiden las deudas.
+                </p>
+              </div>
+            </div>
+            <div className="modal-foot p-4 bg-surface-soft border-t border-line flex justify-end gap-3">
+              <button 
+                onClick={() => setShowVencimientoAlert(false)}
+                className="btn btn-primary px-8 font-black uppercase text-[10px] rounded-lg shadow-md"
+              >
+                Entendido, lo revisaré
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex justify-between items-center flex-wrap gap-2">
         <div>
           <h2 className="text-2xl font-black text-primary">Cuentas por Pagar</h2>
           <p className="text-[10px] text-ink font-black uppercase tracking-widest">Control de Obligaciones con Proveedores</p>
         </div>
-        <button 
-          onClick={() => setShowDeudaDirectaModal(true)} 
-          className="btn btn-primary h-11 px-6 font-black uppercase text-xs flex items-center gap-2 shadow-lg"
-        >
-          <FilePlus className="w-4 h-4" /> Agregar Deuda Directa
-        </button>
+        <div className="flex items-center gap-2">
+          {vencimientosProximos.length > 0 && (
+            <button 
+              onClick={() => setShowVencimientoAlert(true)}
+              className="relative w-[38px] h-[38px] rounded-[10px] bg-white border border-line flex items-center justify-center text-ink hover:text-status-danger transition-colors shadow-sm"
+            >
+              <Bell className="w-4 h-4 text-status-danger animate-pulse" />
+              <span className="absolute -top-1 -right-1 w-5 h-5 bg-status-danger text-white rounded-full flex items-center justify-center text-[9px] font-black border-2 border-white">
+                {vencimientosProximos.length}
+              </span>
+            </button>
+          )}
+          <button 
+            onClick={() => setShowDeudaDirectaModal(true)} 
+            className="btn btn-primary h-11 px-6 font-black uppercase text-xs flex items-center gap-2 shadow-lg"
+          >
+            <FilePlus className="w-4 h-4" /> Agregar Deuda Directa
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
