@@ -54,6 +54,21 @@ import ReturnsModule from '@/components/modules/ReturnsModule';
 import { cn } from '@/lib/utils';
 
 // ============================================================
+// IMPORTS RTDB
+// ============================================================
+import { 
+  getStockRTDB,
+  updateStockRTDB,
+  restoreStockRTDB,
+  getProximoReciboRTDB,
+  incrementarReciboRTDB,
+  initRTDBStructure,
+  getFondoCajaRTDB,
+  setFondoCajaRTDB,
+  listenStockRTDB
+} from '@/lib/rtdb-utils';
+
+// ============================================================
 // UTILIDADES DE NORMALIZACIÓN DE CÉDULA (integradas)
 // ============================================================
 
@@ -172,6 +187,9 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // ===== ESTADO PARA STOCK EN TIEMPO REAL =====
+  const [stockData, setStockData] = useState<Record<string, number>>({});
+
   const formatCedulaByType = (val: string, type: string) => {
     if (type !== 'V' && type !== 'E') {
       return val.replace(/\D/g, '');
@@ -209,9 +227,30 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   }, [search]);
 
   // ============================================================
-  // CORRECCIÓN: getFreshReportData (modificada para calcular efectivo entregado)
+  // ESCUCHAR STOCK EN TIEMPO REAL DESDE RTDB
   // ============================================================
-  const getFreshReportData = () => {
+  useEffect(() => {
+    const unsubscribes: (() => void)[] = [];
+    
+    // Escuchar stock de todos los productos activos
+    const productosIds = state.productos.filter(p => p.activo).map(p => p.id);
+    
+    productosIds.forEach(id => {
+      const unsub = listenStockRTDB(id, (stock) => {
+        setStockData(prev => ({ ...prev, [id]: stock }));
+      });
+      unsubscribes.push(unsub);
+    });
+    
+    return () => {
+      unsubscribes.forEach(unsub => unsub());
+    };
+  }, [state.productos]);
+
+  // ============================================================
+  // CORRECCIÓN: getFreshReportData (modificada para calcular efectivo entregado y leer fondo desde RTDB)
+  // ============================================================
+  const getFreshReportData = async () => {
     const corteTimestamp = state.fechaUltimoZ || '';
     const termId = currentTerminal?.id || 'GLOBAL';
     
@@ -296,6 +335,11 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
 
     const terminalName = currentTerminal ? currentTerminal.nombre : 'SISTEMA GLOBAL';
 
+    // 🔑 Leer fondo desde RTDB (en lugar de Firestore)
+    const fondoData = await getFondoCajaRTDB(termId);
+    const fondoAperturaUSD = fondoData.usd || 0;
+    const fondoAperturaBS = fondoData.bs || 0;
+
     return { 
       brUSD, devUSD, descUSD, netUSD, igtfUSD, ivaUSD, baseImponibleUSD, exentoUSD,
       paymentMethods: paymentMethodsMap,
@@ -305,8 +349,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       manualSalidasBS: salidasCajaBS,
       manualEntradasUSD: entradasCajaUSD,
       manualEntradasBS: entradasCajaBS,
-      fondoAperturaUSD: state.fondoCajaHoyUSD || 0,
-      fondoAperturaBS: state.fondoCajaHoyBS || 0,
+      fondoAperturaUSD,
+      fondoAperturaBS,
       desdeFactura, hastaFactura, desdeNC, hastaNC,
       stats: { 
         facturas: vActivas.length, 
@@ -327,8 +371,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     };
   };
 
-  const handleOpenReport = (type: 'REPORT_X' | 'REPORT_Z') => {
-    const data = getFreshReportData();
+  const handleOpenReport = async (type: 'REPORT_X' | 'REPORT_Z') => {
+    const data = await getFreshReportData();
     setReportSnapshot(data);
     setShowReportType(type);
   };
@@ -366,6 +410,12 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     if (typeof localStorage !== 'undefined') localStorage.removeItem('posven_apertura_done');
     
     await Collections.set('reportesZ', nuevoZ.id, nuevoZ);
+    
+    // 🔑 Actualizar fondo en RTDB (cero después del cierre)
+    const terminalId = currentTerminal?.id || 'GLOBAL';
+    await setFondoCajaRTDB(terminalId, 0, 0);
+    console.log(`✅ Fondo de caja reiniciado en RTDB para terminal: ${terminalId}`);
+    
     updateState({ 
       ultimoZ: numeroZ, 
       fechaUltimoZ: ahora, 
@@ -396,24 +446,46 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     return groups;
   }, [state.cxc]);
 
-  const getStockDisponible = (p: Product) => {
-    let avail = p.stock || 0;
-    if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems) {
-      let compPossible = Infinity;
-      p.kitItems.forEach(ki => {
-        const cp = state.productos.find(c => c.id === ki.productoId);
-        if (cp) compPossible = Math.min(compPossible, Math.floor((cp.stock || 0) / ki.cantidad));
-        else compPossible = 0;
-      });
-      if (compPossible !== Infinity) avail = compPossible;
+  // ============================================================
+  // FUNCIÓN GET STOCK DESDE RTDB (ASÍNCRONA) - CON stockData EN TIEMPO REAL
+  // ============================================================
+  const getStockDisponible = async (p: Product): Promise<number> => {
+    try {
+      // 🔑 Leer stock desde stockData (actualizado por RTDB en tiempo real)
+      let avail = stockData[p.id] ?? 0;
+      
+      // Si no hay stock en stockData, intentar leer directamente
+      if (avail === 0) {
+        const stockRTDB = await getStockRTDB(p.id);
+        avail = stockRTDB || 0;
+      }
+      
+      // Si es un kit, calcular stock disponible basado en componentes
+      if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems) {
+        let compPossible = Infinity;
+        for (const ki of p.kitItems) {
+          const cp = state.productos.find(c => c.id === ki.productoId);
+          if (cp) {
+            const stockComp = stockData[cp.id] ?? await getStockRTDB(cp.id);
+            compPossible = Math.min(compPossible, Math.floor((stockComp || 0) / ki.cantidad));
+          } else {
+            compPossible = 0;
+          }
+        }
+        if (compPossible !== Infinity) avail = compPossible;
+      }
+      return avail;
+    } catch (error) {
+      console.error('Error al leer stock desde RTDB:', error);
+      return p.stock || 0;
     }
-    return avail;
   };
 
-  const agregar = (pid: string) => {
+  const agregar = async (pid: string) => {
     const p = state.productos.find(x => x.id === pid);
     if (!p) return;
-    const stockAvail = getStockDisponible(p);
+    
+    const stockAvail = await getStockDisponible(p);
     if (stockAvail <= 0) {
       toast({ variant: "destructive", title: "Sin Stock" });
       return;
@@ -441,54 +513,57 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   // EFECTO PARA ACTUALIZAR EL CARRITO EN TIEMPO REAL AL CAMBIAR EL MONTO EN BS
   // ============================================================
   useEffect(() => {
-    if (!selectedProductDisplay) {
-      return;
-    }
+    const actualizarCarrito = async () => {
+      if (!selectedProductDisplay) {
+        return;
+      }
 
-    const monto = parseFloat(montoVentaBS.replace(/\./g, ''));
-    if (isNaN(monto) || monto <= 0) {
-      return;
-    }
+      const monto = parseFloat(montoVentaBS.replace(/\./g, ''));
+      if (isNaN(monto) || monto <= 0) {
+        return;
+      }
 
-    const montoUSD = monto / state.tasa;
-    const cantidad = montoUSD / selectedProductDisplay.precioUSD;
+      const montoUSD = monto / state.tasa;
+      const cantidad = montoUSD / selectedProductDisplay.precioUSD;
 
-    if (cantidad <= 0) return;
+      if (cantidad <= 0) return;
 
-    const cantidadRedondeada = Math.round(cantidad * 100) / 100;
+      const cantidadRedondeada = Math.round(cantidad * 100) / 100;
 
-    const stockAvail = getStockDisponible(selectedProductDisplay);
-    if (cantidadRedondeada > stockAvail) {
-      toast({ variant: "destructive", title: "Stock insuficiente", description: `Stock disponible: ${stockAvail} ${selectedProductDisplay.cantidad || 'und'}` });
-      return;
-    }
+      const stockAvail = await getStockDisponible(selectedProductDisplay);
+      if (cantidadRedondeada > stockAvail) {
+        toast({ variant: "destructive", title: "Stock insuficiente", description: `Stock disponible: ${stockAvail} ${selectedProductDisplay.cantidad || 'und'}` });
+        return;
+      }
 
-    const nuevoCarrito = [...state.carrito];
-    const idx = nuevoCarrito.findIndex(i => i.productoId === selectedProductDisplay.id);
-    if (idx >= 0) {
-      nuevoCarrito[idx].cantidad = cantidadRedondeada;
-      nuevoCarrito[idx].subtotalUSD = cantidadRedondeada * nuevoCarrito[idx].precioUnitUSD;
-    } else {
-      nuevoCarrito.push({
-        productoId: selectedProductDisplay.id,
-        nombre: selectedProductDisplay.nombre,
-        precioUnitUSD: selectedProductDisplay.precioUSD,
-        cantidad: cantidadRedondeada,
-        subtotalUSD: cantidadRedondeada * selectedProductDisplay.precioUSD
-      });
-    }
+      const nuevoCarrito = [...state.carrito];
+      const idx = nuevoCarrito.findIndex(i => i.productoId === selectedProductDisplay.id);
+      if (idx >= 0) {
+        nuevoCarrito[idx].cantidad = cantidadRedondeada;
+        nuevoCarrito[idx].subtotalUSD = cantidadRedondeada * nuevoCarrito[idx].precioUnitUSD;
+      } else {
+        nuevoCarrito.push({
+          productoId: selectedProductDisplay.id,
+          nombre: selectedProductDisplay.nombre,
+          precioUnitUSD: selectedProductDisplay.precioUSD,
+          cantidad: cantidadRedondeada,
+          subtotalUSD: cantidadRedondeada * selectedProductDisplay.precioUSD
+        });
+      }
 
-    const currentCarrito = state.carrito;
-    const same = currentCarrito.length === nuevoCarrito.length && 
-                  currentCarrito.every((item, i) => 
-                    item.productoId === nuevoCarrito[i].productoId && 
-                    Math.abs(item.cantidad - nuevoCarrito[i].cantidad) < 0.0001
-                  );
-    if (!same) {
-      updateState({ carrito: nuevoCarrito });
-    }
+      const currentCarrito = state.carrito;
+      const same = currentCarrito.length === nuevoCarrito.length && 
+                    currentCarrito.every((item, i) => 
+                      item.productoId === nuevoCarrito[i].productoId && 
+                      Math.abs(item.cantidad - nuevoCarrito[i].cantidad) < 0.0001
+                    );
+      if (!same) {
+        updateState({ carrito: nuevoCarrito });
+      }
+    };
 
-  }, [montoVentaBS, selectedProductDisplay, state.tasa, state.carrito, updateState, getStockDisponible]);
+    actualizarCarrito();
+  }, [montoVentaBS, selectedProductDisplay, state.tasa, state.carrito, updateState]);
 
   // ===== ACTUALIZAR CANTIDAD CALCULADA EN TIEMPO REAL (para mostrar) =====
   useEffect(() => {
@@ -507,13 +582,13 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     }
   }, [montoVentaBS, selectedProductDisplay, state.tasa]);
 
-  const updateQty = (idx: number, delta: number) => {
+  const updateQty = async (idx: number, delta: number) => {
     const nuevo = [...state.carrito];
     const item = nuevo[idx];
     const p = state.productos.find(x => x.id === item.productoId);
     if (!p) return;
     setSelectedProductDisplay(p);
-    const stockAvail = getStockDisponible(p);
+    const stockAvail = await getStockDisponible(p);
     const n = item.cantidad + delta;
     if (n <= 0) nuevo.splice(idx, 1);
     else if (n <= stockAvail) {
@@ -524,12 +599,12 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     setPagos([]);
   };
 
-  const handleQtyChange = (idx: number, newQty: number) => {
+  const handleQtyChange = async (idx: number, newQty: number) => {
     const nuevo = [...state.carrito];
     const item = nuevo[idx];
     const p = state.productos.find(x => x.id === item.productoId);
     if (!p) return;
-    const stockAvail = getStockDisponible(p);
+    const stockAvail = await getStockDisponible(p);
     
     if (newQty <= 0) {
       nuevo.splice(idx, 1);
@@ -591,7 +666,11 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   };
 
   // ============================================================
-  // FUNCIONES DE VENTA CORREGIDAS (con locks y guardado en colecciones)
+  // FUNCIONES DE VENTA CON RTDB (Stock + Contadores)
+  // ============================================================
+
+  // ============================================================
+  // EJECUTAR VENTA CON RTDB (Stock + Contadores)
   // ============================================================
   const ejecutarVenta = async (pagosFinales?: PagoRealizado[]) => {
     if (processingRef.current) return;
@@ -604,16 +683,35 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       const listadoPagos = pagosFinales || pagos;
       const totalPagadoRecibido = listadoPagos.reduce((s, p) => s + p.montoUSD, 0);
       const terminal = getCurrentTerminal();
+      const terminalId = terminal?.id || 'GLOBAL';
       
-      const nextNum = terminal?.proximoRecibo || state.proximoRecibo;
+      // 🔑 Leer próximo recibo desde RTDB (en lugar de Firestore)
+      let nextNum = await getProximoReciboRTDB(terminalId);
+      
+      // Si es 1 y no existe, inicializar estructura
+      if (nextNum === 1) {
+        try {
+          await initRTDBStructure(terminalId);
+          nextNum = 1;
+        } catch (e) {
+          // Si falla, usar fallback de Firestore
+          nextNum = terminal?.proximoRecibo || state.proximoRecibo || 1;
+        }
+      }
+      
       const reciboId = String(nextNum).padStart(9, '0');
       const ahoraStr = Utils.ahora();
       
       let vExento = 0, vBase = 0, vIVA = 0;
-      const prodsActualizados: Product[] = [];
-      const nuevosMovimientos: Movimiento[] = [];
 
-      // Procesar cada item del carrito y actualizar stock en Firestore
+      // 🔑 ACTUALIZAR STOCK EN RTDB (1 sola operación batch)
+      const itemsParaStock = state.carrito.map(item => ({
+        productoId: item.productoId,
+        cantidad: item.cantidad
+      }));
+      await updateStockRTDB(itemsParaStock);
+
+      // Calcular IVA
       for (const item of state.carrito) {
         const p = state.productos.find(x => x.id === item.productoId);
         if (!p) continue;
@@ -625,53 +723,10 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         } else { 
           vExento += item.subtotalUSD; 
         }
-        
-        if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems) {
-          for (const ki of p.kitItems) {
-            const cp = state.productos.find(c => c.id === ki.productoId);
-            if (cp) {
-              const qty = item.cantidad * ki.cantidad;
-              const stockAntes = cp.stock;
-              const cpActualizado = { ...cp, stock: cp.stock - qty };
-              await Collections.set('productos', cp.id, cpActualizado);
-              
-              const mov: Movimiento = {
-                id: Store.uid(),
-                productoId: cp.id,
-                tipo: 'venta',
-                cantidad: -qty,
-                stockAntes,
-                stockDespues: cpActualizado.stock,
-                fecha: ahoraStr,
-                referencia: `KIT: ${p.nombre} - VENTA ${reciboId}`,
-                terminalId: terminal?.id || 'GLOBAL'
-              };
-              await Collections.set('movimientos', mov.id, mov);
-              nuevosMovimientos.push(mov);
-            }
-          }
-        } else {
-          const stockAntes = p.stock;
-          const pActualizado = { ...p, stock: p.stock - item.cantidad };
-          await Collections.set('productos', p.id, pActualizado);
-          
-          const mov: Movimiento = {
-            id: Store.uid(),
-            productoId: item.productoId,
-            tipo: 'venta',
-            cantidad: -item.cantidad,
-            stockAntes,
-            stockDespues: pActualizado.stock,
-            fecha: ahoraStr,
-            referencia: `VENTA ${reciboId}`,
-            terminalId: terminal?.id || 'GLOBAL'
-          };
-          await Collections.set('movimientos', mov.id, mov);
-          nuevosMovimientos.push(mov);
-        }
       }
 
-      const vIgtf = listadoPagos.filter(p => p.metodo === 'efectivo_usd' || p.metodo === 'zelle').reduce((acc, p) => acc + (p.montoUSD * 0.03), 0);
+      const vIgtf = listadoPagos.filter(p => p.metodo === 'efectivo_usd' || p.metodo === 'zelle')
+        .reduce((acc, p) => acc + (p.montoUSD * 0.03), 0);
       
       const nuevaVenta: Sale = { 
         id: reciboId, 
@@ -688,7 +743,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         received: totalPagadoRecibido, 
         change: Math.max(0, totalPagadoRecibido - subtotalUSD), 
         payments: [...listadoPagos], 
-        terminalId: terminal?.id || 'GLOBAL',
+        terminalId: terminalId,
         terminalName: terminal?.nombre || 'SISTEMA GLOBAL',
         cajeroId: auth?.currentUser?.uid, 
         baseImponibleUSD: Utils.round(vBase), 
@@ -698,31 +753,25 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         tasa: state.tasa
       };
       
-      // Guardar venta
+      // 🔑 Guardar VENTA en Firestore (1 escritura)
       await Collections.set('ventas', reciboId, nuevaVenta);
       
-      // Guardar libro diario
-      for (const p of listadoPagos) {
-        const asiento: LibroDiarioEntry = {
-          id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
-          fecha: ahoraStr,
-          tipo: 'ingreso',
-          categoria: 'VENTA',
-          concepto: `VENTA #${reciboId} - CLIENTE: ${cliente.toUpperCase()}`,
-          montoUSD: p.montoUSD,
-          montoBS: p.montoBS,
-          metodo: p.metodo,
-          referencia: reciboId + '-' + (terminal?.id || 'GLOBAL')
-        };
-        await Collections.set('libroDiario', asiento.id, asiento);
-      }
+      // 🔑 Guardar LIBRO DIARIO en Firestore (1 asiento resumen en lugar de 1 por pago)
+      const asientoResumen: LibroDiarioEntry = {
+        id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
+        fecha: ahoraStr,
+        tipo: 'ingreso',
+        categoria: 'VENTA',
+        concepto: `VENTA #${reciboId} - CLIENTE: ${cliente.toUpperCase()}`,
+        montoUSD: totalPagadoRecibido,
+        montoBS: totalPagadoRecibido * state.tasa,
+        metodo: listadoPagos.length > 1 ? 'mixto' : listadoPagos[0]?.metodo || 'efectivo_usd',
+        referencia: reciboId + '-' + terminalId
+      };
+      await Collections.set('libroDiario', asientoResumen.id, asientoResumen);
       
-      // Actualizar terminal (proximoRecibo)
-      if (terminal) {
-        await Collections.update('terminales', terminal.id, { 
-          proximoRecibo: nextNum + 1 
-        });
-      }
+      // 🔑 Incrementar contador en RTDB (en lugar de Firestore)
+      await incrementarReciboRTDB(terminalId);
       
       // Limpiar carrito
       updateState({ carrito: [] });
@@ -732,6 +781,20 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       setPagos([]); 
       setCliente('Consumidor final'); 
       setSelectedProductDisplay(null);
+
+      toast({
+        title: "Venta Registrada",
+        description: `Recibo #${reciboId} - ${Utils.fmtUSD(subtotalUSD)}`,
+        duration: 3000
+      });
+
+    } catch (error: any) {
+      console.error('Error en ejecutarVenta:', error);
+      toast({ 
+        variant: "destructive", 
+        title: "Error al registrar venta", 
+        description: error.message || "Intente nuevamente" 
+      });
     } finally {
       processingRef.current = false;
       setIsProcessing(false);
@@ -748,7 +811,19 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       const totalAbonado = pagosAbono.reduce((s, p) => s + p.montoUSD, 0);
       if (totalAbonado <= 0) return;
       const ahoraStr = Utils.ahora(), terminal = getCurrentTerminal();
-      const nextNum = terminal?.proximoRecibo || state.proximoRecibo;
+      const terminalId = terminal?.id || 'GLOBAL';
+      
+      // 🔑 Leer próximo recibo desde RTDB
+      let nextNum = await getProximoReciboRTDB(terminalId);
+      if (nextNum === 1) {
+        try {
+          await initRTDBStructure(terminalId);
+          nextNum = 1;
+        } catch (e) {
+          nextNum = terminal?.proximoRecibo || state.proximoRecibo || 1;
+        }
+      }
+      
       const reciboId = 'PAY-' + String(nextNum).padStart(6, '0');
       
       // Actualizar deuda en cxc
@@ -782,7 +857,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
           montoUSD: p.montoUSD,
           montoBS: p.montoBS,
           metodo: p.metodo,
-          referencia: reciboId + '-' + (terminal?.id || 'GLOBAL')
+          referencia: reciboId + '-' + terminalId
         };
         await Collections.set('libroDiario', asiento.id, asiento);
       }
@@ -800,19 +875,15 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         estado: 'completada', 
         type: 'COBRO DEUDA', 
         payments: [...pagosAbono], 
-        terminalId: terminal?.id || 'GLOBAL',
+        terminalId: terminalId,
         terminalName: terminal?.nombre || 'SISTEMA GLOBAL',
         tasa: state.tasa
       };
       
       await Collections.set('ventas', reciboId, saleAbono);
       
-      // Actualizar terminal (proximoRecibo)
-      if (terminal) {
-        await Collections.update('terminales', terminal.id, { 
-          proximoRecibo: nextNum + 1 
-        });
-      }
+      // 🔑 Incrementar contador en RTDB
+      await incrementarReciboRTDB(terminalId);
       
       setLastProcessedSale(saleAbono); 
       setShowReceiptModal(true); 
@@ -833,14 +904,32 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
 
     try {
       const terminal = getCurrentTerminal();
-      const nextNum = terminal?.proximoRecibo || state.proximoRecibo;
+      const terminalId = terminal?.id || 'GLOBAL';
+      
+      // 🔑 Leer próximo recibo desde RTDB
+      let nextNum = await getProximoReciboRTDB(terminalId);
+      if (nextNum === 1) {
+        try {
+          await initRTDBStructure(terminalId);
+          nextNum = 1;
+        } catch (e) {
+          nextNum = terminal?.proximoRecibo || state.proximoRecibo || 1;
+        }
+      }
+      
       const reciboId = String(nextNum).padStart(9, '0');
       const ahoraStr = Utils.ahora();
       
       let vExento = 0, vBase = 0, vIVA = 0;
-      const nuevosMovimientos: Movimiento[] = [];
 
-      // Procesar cada item del carrito
+      // 🔑 ACTUALIZAR STOCK EN RTDB
+      const itemsParaStock = state.carrito.map(item => ({
+        productoId: item.productoId,
+        cantidad: item.cantidad
+      }));
+      await updateStockRTDB(itemsParaStock);
+
+      // Procesar cada item del carrito para calcular IVA
       for (const item of state.carrito) {
         const p = state.productos.find(x => x.id === item.productoId);
         if (!p) continue;
@@ -851,50 +940,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
           vIVA += (item.subtotalUSD - base); 
         } else { 
           vExento += item.subtotalUSD; 
-        }
-        
-        if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems) {
-          for (const ki of p.kitItems) {
-            const cp = state.productos.find(c => c.id === ki.productoId);
-            if (cp) {
-              const qty = item.cantidad * ki.cantidad;
-              const stockAntes = cp.stock;
-              const cpActualizado = { ...cp, stock: cp.stock - qty };
-              await Collections.set('productos', cp.id, cpActualizado);
-              
-              const mov: Movimiento = {
-                id: Store.uid(),
-                productoId: cp.id,
-                tipo: 'venta',
-                cantidad: -qty,
-                stockAntes,
-                stockDespues: cpActualizado.stock,
-                fecha: ahoraStr,
-                referencia: `KIT: ${p.nombre} - CRÉDITO ${reciboId}`,
-                terminalId: terminal?.id || 'GLOBAL'
-              };
-              await Collections.set('movimientos', mov.id, mov);
-              nuevosMovimientos.push(mov);
-            }
-          }
-        } else {
-          const stockAntes = p.stock;
-          const pActualizado = { ...p, stock: p.stock - item.cantidad };
-          await Collections.set('productos', p.id, pActualizado);
-          
-          const mov: Movimiento = {
-            id: Store.uid(),
-            productoId: item.productoId,
-            tipo: 'venta',
-            cantidad: -item.cantidad,
-            stockAntes,
-            stockDespues: pActualizado.stock,
-            fecha: ahoraStr,
-            referencia: `CRÉDITO ${reciboId}`,
-            terminalId: terminal?.id || 'GLOBAL'
-          };
-          await Collections.set('movimientos', mov.id, mov);
-          nuevosMovimientos.push(mov);
         }
       }
       
@@ -912,7 +957,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         type: 'VENTA CRÉDITO', 
         received: 0, 
         change: 0, 
-        terminalId: terminal?.id || 'GLOBAL',
+        terminalId: terminalId,
         terminalName: terminal?.nombre || 'SISTEMA GLOBAL',
         cajeroId: auth?.currentUser?.uid, 
         baseImponibleUSD: Utils.round(vBase), 
@@ -948,12 +993,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         await Collections.set('clientes', customer.id, clienteActualizado);
       }
       
-      // Actualizar terminal
-      if (terminal) {
-        await Collections.update('terminales', terminal.id, { 
-          proximoRecibo: nextNum + 1 
-        });
-      }
+      // 🔑 Incrementar contador en RTDB
+      await incrementarReciboRTDB(terminalId);
       
       // Limpiar carrito
       updateState({ carrito: [] });
@@ -989,9 +1030,9 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
 
   // ============================================================
   // VENTA DE EFECTIVO CON CONTADOR POR TERMINAL Y ACTUALIZACIÓN INMEDIATA
-  // CORREGIDO: SOLO SE REGISTRA LA COMISIÓN EN EL LIBRO DIARIO, NO LA ENTREGA DE EFECTIVO
+  // CORREGIDO: SOLO SE REGISTRA LA COMISIÓN EN EL LIBRO DIARIO
   // ============================================================
-  const procesarVentaEfectivo = (data: {
+  const procesarVentaEfectivo = async (data: {
     montoEfectivoBS: number;
     totalAPagarBS: number;
     comision: number;
@@ -999,7 +1040,16 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   }) => {
     const ahoraStr = Utils.ahora();
     const terminal = getCurrentTerminal();
-    const nextNum = terminal?.proximaVentaEfectivo || 1;
+    const terminalId = terminal?.id || 'GLOBAL';
+    
+    // 🔑 Leer próximo contador desde RTDB
+    let nextNum = 1;
+    try {
+      nextNum = await getProximoReciboRTDB(terminalId) || 1;
+    } catch (e) {
+      nextNum = terminal?.proximaVentaEfectivo || 1;
+    }
+    
     const reciboId = 'EFE-' + String(nextNum).padStart(7, '0');
 
     const totalUSD = data.totalAPagarBS / state.tasa;
@@ -1034,7 +1084,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         montoUSD: totalUSD,
         montoBS: data.totalAPagarBS
       }],
-      terminalId: terminal?.id || 'GLOBAL',
+      terminalId: terminalId,
       terminalName: terminal?.nombre || 'SISTEMA GLOBAL',
       cajeroId: auth?.currentUser?.uid,
       baseImponibleUSD: totalUSD,
@@ -1054,31 +1104,49 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       montoUSD: comisionUSD,
       montoBS: comisionBS,
       metodo: data.metodoPago as PaymentMethod,
-      referencia: reciboId + '-' + (terminal?.id || 'GLOBAL')
+      referencia: reciboId + '-' + terminalId
     };
 
-    // 🔑 Guardar en Firestore (solo la comisión)
-    Collections.set('ventas', reciboId, nuevaVenta);
-    Collections.set('libroDiario', asientoComision.id, asientoComision);
+    try {
+      // 🔑 Guardar en Firestore
+      await Collections.set('ventas', reciboId, nuevaVenta);
+      await Collections.set('libroDiario', asientoComision.id, asientoComision);
 
-    // 🔑 Actualizar estado local INMEDIATAMENTE (solo la comisión, no el egreso)
-    updateState({ 
-      ventas: [...state.ventas, nuevaVenta],
-      libroDiario: [asientoComision, ...(state.libroDiario || [])]
-    });
+      // 🔑 Actualizar contador en RTDB
+      try {
+        const { incrementarVentaEfectivoRTDB } = await import('@/lib/rtdb-utils');
+        await incrementarVentaEfectivoRTDB(terminalId);
+      } catch (e) {
+        console.warn('Error al actualizar contador en RTDB:', e);
+      }
 
-    // Actualizar contador del terminal
-    if (terminal) {
-      Collections.update('terminales', terminal.id, { 
-        proximaVentaEfectivo: nextNum + 1 
+      // 🔑 Actualizar contador en Firestore (terminal - fallback)
+      if (terminal) {
+        await Collections.update('terminales', terminal.id, { 
+          proximaVentaEfectivo: nextNum + 1 
+        });
+      }
+
+      // 🔑 ACTUALIZAR ESTADO LOCAL INMEDIATAMENTE
+      updateState({ 
+        ventas: [...(state.ventas || []), nuevaVenta],
+        libroDiario: [asientoComision, ...(state.libroDiario || [])]
+      });
+
+      toast({
+        title: "Venta de Efectivo Registrada",
+        description: `Se entregaron ${Utils.fmtBS(data.montoEfectivoBS)} en efectivo. Cobro: ${Utils.fmtBS(data.totalAPagarBS)} (${data.comision}% comisión)`,
+        duration: 5000
+      });
+
+    } catch (error: any) {
+      console.error('Error al guardar venta de efectivo:', error);
+      toast({
+        variant: "destructive",
+        title: "Error al registrar venta de efectivo",
+        description: error.message || "Intente nuevamente"
       });
     }
-
-    toast({
-      title: "Venta de Efectivo Registrada",
-      description: `Se entregaron ${Utils.fmtBS(data.montoEfectivoBS)} en efectivo. Cobro: ${Utils.fmtBS(data.totalAPagarBS)} (${data.comision}% comisión)`,
-      duration: 5000
-    });
 
     setShowCashSaleModal(false);
   };
@@ -1181,17 +1249,14 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
             {/* ✅ BOTÓN DE LIMPIAR CACHÉ - SOLO EN VISTA POS */}
             <button 
               onClick={() => {
-                // Limpiar caché de productos
                 localStorage.removeItem('posven_productos_cache');
                 localStorage.removeItem('posven_productos_timestamp');
-                // Limpiar estado local de productos (fuerza recarga desde Firestore)
                 updateState({ productos: [] });
                 toast({
                   title: "🗑️ Caché de Productos Limpiado",
                   description: "Los productos se recargarán desde la nube automáticamente.",
                   duration: 3000
                 });
-                // Recargar la página después de 1 segundo para refrescar todo
                 setTimeout(() => {
                   window.location.reload();
                 }, 1000);
@@ -1242,8 +1307,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                       <div className="flex items-center gap-10 shrink-0 ml-4">
                          <div className="flex flex-col items-end min-w-[70px]">
                            <span className="text-[9px] font-black uppercase text-ink/40 mb-0.5">Stock</span>
-                           <span className={`text-lg font-black leading-none ${p.stock <= (p.stockMinimo || 3) ? 'text-red-600' : p.stock <= (p.stockMinimo || 3) * 2 ? 'text-amber-500' : 'text-green-600'}`}>
-                             {p.stock} <span className="text-[10px] opacity-60">Und.</span>
+                           <span className={`text-lg font-black leading-none ${(stockData[p.id] ?? p.stock) <= (p.stockMinimo || 3) ? 'text-red-600' : (stockData[p.id] ?? p.stock) <= (p.stockMinimo || 3) * 2 ? 'text-amber-500' : 'text-green-600'}`}>
+                             {stockData[p.id] ?? p.stock} <span className="text-[10px] opacity-60">Und.</span>
                            </span>
                          </div>
                          <div className="flex items-center gap-2">
@@ -1294,8 +1359,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                     <div className="space-y-3 animate-in slide-in-from-bottom-2 duration-300">
                        <div className="p-3 bg-surface-soft border border-line rounded-xl text-center">
                          <span className="text-[9px] font-black uppercase text-ink opacity-40 block mb-1">STOCK DISPONIBLE</span>
-                         <span className={`text-2xl font-black ${selectedProductDisplay.stock <= (selectedProductDisplay.stockMinimo || 3) ? 'text-status-danger' : selectedProductDisplay.stock <= (selectedProductDisplay.stockMinimo || 3) * 2 ? 'text-status-warn' : 'text-status-success'}`}>
-                           {selectedProductDisplay.stock} <span className="text-xs">{selectedProductDisplay.cantidad || 'UND'}</span>
+                         <span className={`text-2xl font-black ${(stockData[selectedProductDisplay.id] ?? selectedProductDisplay.stock) <= (selectedProductDisplay.stockMinimo || 3) ? 'text-status-danger' : (stockData[selectedProductDisplay.id] ?? selectedProductDisplay.stock) <= (selectedProductDisplay.stockMinimo || 3) * 2 ? 'text-status-warn' : 'text-status-success'}`}>
+                           {stockData[selectedProductDisplay.id] ?? selectedProductDisplay.stock} <span className="text-xs">{selectedProductDisplay.cantidad || 'UND'}</span>
                          </span>
                        </div>
                        <div className="p-3 bg-surface-soft border border-line rounded-xl text-center">
