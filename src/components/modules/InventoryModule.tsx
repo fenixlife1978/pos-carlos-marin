@@ -49,18 +49,25 @@ import {
 import { ProductFormModal } from '@/components/inventory/ProductFormModal';
 
 // ============================================================
-// HELPERS DE FORMATO PARA ML
+// HELPERS DE FORMATO PARA ML (CORREGIDOS)
 // ============================================================
-const formatPrice = (value: number, unit?: string) => {
-  const isMl = unit && (unit.trim().toLowerCase() === 'ml' || unit.trim().toLowerCase() === 'mililitro' || unit.trim().toLowerCase() === 'mililitros');
-  const decimals = isMl ? 3 : 2;
+const formatPrice = (value: number, unit?: string, esFraccionado?: boolean) => {
+  // Si es venta fraccionada, mostrar más decimales
+  const isMl = esFraccionado || (unit && (unit.trim().toLowerCase() === 'ml' || unit.trim().toLowerCase() === 'mililitro' || unit.trim().toLowerCase() === 'mililitros'));
+  const decimals = isMl ? 4 : 2;
   return '$' + Number(value).toLocaleString('en-US', { 
     minimumFractionDigits: decimals, 
     maximumFractionDigits: decimals 
   });
 };
 
-const formatStock = (stock: number, unit?: string) => {
+const formatStock = (stock: number, unit?: string, producto?: Product) => {
+  // Si el producto tiene venta fraccionada, mostrar el stock en formato decimal
+  if (producto?.ventaFraccionada && producto?.stockML !== undefined && producto?.volumenTotalML) {
+    const valorDecimal = producto.stockML / producto.volumenTotalML;
+    return valorDecimal.toFixed(2);
+  }
+  
   const normalizedUnit = unit ? unit.trim().toLowerCase() : '';
   if (normalizedUnit === 'ml' || normalizedUnit === 'mililitro' || normalizedUnit === 'mililitros') {
     return stock.toFixed(2);
@@ -101,7 +108,14 @@ export function InventoryModule({ state, updateState }: { state: AppState, updat
     (deptFilter ? p.departamento === deptFilter : true)
   );
 
-  const lowStockCount = prods.filter(p => p.stock <= (p.stockMinimo || 0)).length;
+  // 🔑 KPI de stock bajo corregido para venta fraccionada
+  const lowStockCount = prods.filter(p => {
+    if (p.ventaFraccionada) {
+      const stockDecimal = (p.stockML || 0) / (p.volumenTotalML || 1000);
+      return stockDecimal <= (p.stockMinimo || 0);
+    }
+    return p.stock <= (p.stockMinimo || 0);
+  }).length;
 
   const eliminar = async (id: string) => {
     if (!confirm('¿Seguro que desea eliminar este producto?')) return;
@@ -214,14 +228,20 @@ export function InventoryModule({ state, updateState }: { state: AppState, updat
                         </TableCell>
                         <TableCell><span className="badge badge-neutral text-ink font-black uppercase text-[9px]">{p.categoria}</span></TableCell>
                         <TableCell className="mono font-bold text-ink/50 text-right">
-                          {formatPrice(p.costoUSD, p.cantidad)}
+                          {formatPrice(p.costoUSD, p.cantidad, p.ventaFraccionada)}
                         </TableCell>
                         <TableCell className="mono text-brand-gold-deep font-black text-right">
-                          {formatPrice(p.precioUSD, p.cantidad)}
+                          {formatPrice(p.precioUSD, p.cantidad, p.ventaFraccionada)}
                         </TableCell>
                         <TableCell className="text-center">
-                          <span className={`badge ${p.stock <= (p.stockMinimo || 0) ? 'badge-err' : 'badge-neutral'} font-black text-xs min-w-[40px]`}>
-                            {formatStock(p.stock, p.cantidad)}
+                          <span className={`badge ${p.ventaFraccionada 
+                            ? ((p.stockML || 0) / (p.volumenTotalML || 1000) <= (p.stockMinimo || 0) ? 'badge-err' : 'badge-neutral')
+                            : (p.stock <= (p.stockMinimo || 0) ? 'badge-err' : 'badge-neutral')
+                          } font-black text-xs min-w-[40px]`}>
+                            {p.ventaFraccionada 
+                              ? `${((p.stockML || 0) / (p.volumenTotalML || 1000)).toFixed(2)}`
+                              : formatStock(p.stock, p.cantidad)
+                            }
                           </span>
                         </TableCell>
                         <TableCell>
@@ -478,14 +498,17 @@ function ReporteGeneral({ state, onAction }: { state: AppState, onAction: (type:
                     <TableCell className="mono text-[11px] font-black text-ink">{p.codigo}</TableCell>
                     <TableCell className="font-black uppercase text-xs text-ink">{p.nombre}</TableCell>
                     <TableCell className="mono text-right text-xs font-bold text-ink/60">
-                      {formatPrice(p.costoUSD, p.cantidad)}
+                      {formatPrice(p.costoUSD, p.cantidad, p.ventaFraccionada)}
                     </TableCell>
                     <TableCell className="mono text-right text-brand-gold-deep font-black">
-                      {formatPrice(p.precioUSD, p.cantidad)}
+                      {formatPrice(p.precioUSD, p.cantidad, p.ventaFraccionada)}
                     </TableCell>
                     <TableCell className="text-center py-3 px-4">
                       <span className="badge badge-neutral font-black">
-                        {formatStock(p.stock, p.cantidad)}
+                        {p.ventaFraccionada 
+                          ? `${((p.stockML || 0) / (p.volumenTotalML || 1000)).toFixed(2)}`
+                          : formatStock(p.stock, p.cantidad)
+                        }
                       </span>
                     </TableCell>
                     <TableCell className="mono text-right font-black text-ink">{Utils.fmtUSD(Utils.round(p.costoUSD * p.stock))}</TableCell>

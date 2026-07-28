@@ -40,7 +40,8 @@ import {
   Tag,
   Loader2,
   Hash,
-  Banknote
+  Banknote,
+  FlaskConical
 } from 'lucide-react';
 import { auth } from '@/lib/firebase';
 import { ReceiptModal } from '@/components/pos/ReceiptModal';
@@ -138,7 +139,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   
   const [priceSelectorItem, setPriceSelectorItem] = useState<{ index: number, product: Product } | null>(null);
 
-  // ===== ESTADO PARA VENTA POR MONTO =====
+  // ===== ESTADO PARA VENTA POR MONTO (ya no se usa visualmente, pero se conserva) =====
   const [montoVentaBS, setMontoVentaBS] = useState<string>('');
   const [cantidadCalculada, setCantidadCalculada] = useState<number | null>(null);
 
@@ -171,6 +172,13 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   const [selectedSearchIndex, setSelectedSearchIndex] = useState<number>(-1);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // ===== ESTADOS PARA VENTA FRACCIONADA =====
+  const [showFraccionSelector, setShowFraccionSelector] = useState<{
+    producto: Product;
+  } | null>(null);
+  const [montoFraccionBS, setMontoFraccionBS] = useState<number>(0);
+  const [mlCalculados, setMlCalculados] = useState<number>(0);
 
   const formatCedulaByType = (val: string, type: string) => {
     if (type !== 'V' && type !== 'E') {
@@ -396,7 +404,15 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     return groups;
   }, [state.cxc]);
 
+  // ============================================================
+  // FUNCIÓN GET STOCK DISPONIBLE (incluye venta fraccionada)
+  // ============================================================
   const getStockDisponible = (p: Product) => {
+    // Si es venta fraccionada, retornar stock en ml
+    if (p.ventaFraccionada && p.stockML !== undefined) {
+      return p.stockML;
+    }
+    
     let avail = p.stock || 0;
     if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems) {
       let compPossible = Infinity;
@@ -410,9 +426,34 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     return avail;
   };
 
+  // ============================================================
+  // FUNCIÓN CALCULAR FRACCIÓN (CORREGIDA: usa precioUSD como precio por ml)
+  // ============================================================
+  const calcularFraccion = (montoBS: number, producto: Product): number => {
+    const precioPorMlUSD = producto.precioUSD || 0;
+    if (precioPorMlUSD <= 0) return 0;
+    // Convertir monto BS a USD
+    const montoUSD = montoBS / state.tasa;
+    // Calcular ml
+    return montoUSD / precioPorMlUSD;
+  };
+
+  // ============================================================
+  // FUNCIÓN AGREGAR (modificada: fraccionado abre modal directo)
+  // ============================================================
   const agregar = (pid: string) => {
     const p = state.productos.find(x => x.id === pid);
     if (!p) return;
+    
+    // Si el producto permite venta fraccionada -> abrir modal de fracción directamente
+    if (p.ventaFraccionada) {
+      setShowFraccionSelector({ producto: p });
+      setMontoFraccionBS(0);
+      setMlCalculados(0);
+      return;
+    }
+    
+    // Producto normal (no fraccionado)
     const stockAvail = getStockDisponible(p);
     if (stockAvail <= 0) {
       toast({ variant: "destructive", title: "Sin Stock" });
@@ -434,6 +475,83 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     setMontoVentaBS('');
     setCantidadCalculada(null);
     setSelectedSearchIndex(-1);
+    searchInputRef.current?.focus();
+  };
+
+  // ============================================================
+  // FUNCIÓN AGREGAR FRACCIÓN AL CARRITO
+  // ============================================================
+  const agregarFraccion = () => {
+    if (!showFraccionSelector) return;
+    const p = showFraccionSelector.producto;
+    
+    const mlAVender = mlCalculados;
+    const montoBS = montoFraccionBS;
+    const montoUSD = montoBS / state.tasa;
+    
+    // Verificar stock disponible en ml
+    const stockDisponibleML = p.stockML || 0;
+    if (mlAVender > stockDisponibleML) {
+      const botellasCompletas = Math.floor(stockDisponibleML / 1000);
+      const mlRestantes = stockDisponibleML % 1000;
+      toast({ 
+        variant: "destructive", 
+        title: "Stock insuficiente", 
+        description: `Stock disponible: ${botellasCompletas}L + ${mlRestantes}ml` 
+      });
+      return;
+    }
+    
+    // Verificar monto mínimo (mínimo 50ml) - usando precioUSD * 50ml * tasa
+    const mlMinimo = 50;
+    if (mlAVender < mlMinimo) {
+      const precioMinimoUSD = (p.precioUSD || 0) * mlMinimo;
+      const precioMinimoBS = precioMinimoUSD * state.tasa;
+      toast({ 
+        variant: "destructive", 
+        title: "Monto mínimo", 
+        description: `El monto mínimo es ${Utils.fmtBS(precioMinimoBS)} (${mlMinimo} ml)` 
+      });
+      return;
+    }
+    
+    const nuevoCarrito = [...state.carrito];
+    const idx = nuevoCarrito.findIndex(i => i.productoId === p.id && i.esFraccion === true);
+    
+    const item = {
+      productoId: p.id,
+      nombre: `${p.nombre} - ${mlAVender.toFixed(0)}ml (${Utils.fmtBS(montoBS)})`,
+      precioUnitUSD: montoUSD,
+      cantidad: 1,
+      subtotalUSD: montoUSD,
+      volumenML: mlAVender,
+      montoBS: montoBS,
+      esFraccion: true
+    };
+    
+    if (idx >= 0) {
+      const existing = nuevoCarrito[idx];
+      const nuevoVolumen = (existing.volumenML || 0) + mlAVender;
+      const nuevoMonto = (existing.montoBS || 0) + montoBS;
+      nuevoCarrito[idx] = {
+        ...existing,
+        cantidad: 1,
+        volumenML: nuevoVolumen,
+        montoBS: nuevoMonto,
+        subtotalUSD: nuevoMonto / state.tasa,
+        precioUnitUSD: nuevoMonto / state.tasa,
+        nombre: `${p.nombre} - ${nuevoVolumen.toFixed(0)}ml (${Utils.fmtBS(nuevoMonto)})`,
+        esFraccion: true
+      };
+    } else {
+      nuevoCarrito.push(item);
+    }
+    
+    updateState({ carrito: nuevoCarrito });
+    setShowFraccionSelector(null);
+    setMontoFraccionBS(0);
+    setMlCalculados(0);
+    setSearch('');
     searchInputRef.current?.focus();
   };
 
@@ -613,7 +731,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       const prodsActualizados: Product[] = [];
       const nuevosMovimientos: Movimiento[] = [];
 
-      // Procesar cada item del carrito y actualizar stock en Firestore
+      // Procesar cada item del carrito
       for (const item of state.carrito) {
         const p = state.productos.find(x => x.id === item.productoId);
         if (!p) continue;
@@ -626,6 +744,30 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
           vExento += item.subtotalUSD; 
         }
         
+        // ===== VENTA FRACCIONADA (descuenta en ml) =====
+        if (p.ventaFraccionada && item.esFraccion && item.volumenML) {
+          const nuevoStockML = (p.stockML || 0) - item.volumenML;
+          const pActualizado = { ...p, stockML: nuevoStockML };
+          await Collections.set('productos', p.id, pActualizado);
+          prodsActualizados.push(pActualizado);
+          
+          const mov: Movimiento = {
+            id: Store.uid(),
+            productoId: item.productoId,
+            tipo: 'venta',
+            cantidad: -item.volumenML,
+            stockAntes: p.stockML || 0,
+            stockDespues: nuevoStockML,
+            fecha: ahoraStr,
+            referencia: `VENTA FRACCIONADA ${reciboId} - ${item.volumenML}ml`,
+            terminalId: terminal?.id || 'GLOBAL'
+          };
+          await Collections.set('movimientos', mov.id, mov);
+          nuevosMovimientos.push(mov);
+          continue;
+        }
+        
+        // ===== KITS =====
         if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems) {
           for (const ki of p.kitItems) {
             const cp = state.productos.find(c => c.id === ki.productoId);
@@ -650,7 +792,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
               nuevosMovimientos.push(mov);
             }
           }
-        } else {
+        } else if (!p.ventaFraccionada) {
+          // ===== PRODUCTO NORMAL =====
           const stockAntes = p.stock;
           const pActualizado = { ...p, stock: p.stock - item.cantidad };
           await Collections.set('productos', p.id, pActualizado);
@@ -853,6 +996,28 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
           vExento += item.subtotalUSD; 
         }
         
+        // ===== VENTA FRACCIONADA =====
+        if (p.ventaFraccionada && item.esFraccion && item.volumenML) {
+          const nuevoStockML = (p.stockML || 0) - item.volumenML;
+          const pActualizado = { ...p, stockML: nuevoStockML };
+          await Collections.set('productos', p.id, pActualizado);
+          
+          const mov: Movimiento = {
+            id: Store.uid(),
+            productoId: item.productoId,
+            tipo: 'venta',
+            cantidad: -item.volumenML,
+            stockAntes: p.stockML || 0,
+            stockDespues: nuevoStockML,
+            fecha: ahoraStr,
+            referencia: `VENTA FRACCIONADA ${reciboId} - ${item.volumenML}ml`,
+            terminalId: terminal?.id || 'GLOBAL'
+          };
+          await Collections.set('movimientos', mov.id, mov);
+          nuevosMovimientos.push(mov);
+          continue;
+        }
+        
         if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems) {
           for (const ki of p.kitItems) {
             const cp = state.productos.find(c => c.id === ki.productoId);
@@ -877,7 +1042,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
               nuevosMovimientos.push(mov);
             }
           }
-        } else {
+        } else if (!p.ventaFraccionada) {
           const stockAntes = p.stock;
           const pActualizado = { ...p, stock: p.stock - item.cantidad };
           await Collections.set('productos', p.id, pActualizado);
@@ -989,7 +1154,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
 
   // ============================================================
   // VENTA DE EFECTIVO CON CONTADOR POR TERMINAL Y ACTUALIZACIÓN INMEDIATA
-  // CORREGIDO: SOLO SE REGISTRA LA COMISIÓN EN EL LIBRO DIARIO, NO LA ENTREGA DE EFECTIVO
   // ============================================================
   const procesarVentaEfectivo = (data: {
     montoEfectivoBS: number;
@@ -1061,7 +1225,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     Collections.set('ventas', reciboId, nuevaVenta);
     Collections.set('libroDiario', asientoComision.id, asientoComision);
 
-    // 🔑 Actualizar estado local INMEDIATAMENTE (solo la comisión, no el egreso)
+    // 🔑 Actualizar estado local INMEDIATAMENTE
     updateState({ 
       ventas: [...state.ventas, nuevaVenta],
       libroDiario: [asientoComision, ...(state.libroDiario || [])]
@@ -1129,9 +1293,17 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   const paginatedHistory = filteredHistory.slice((historyPage - 1) * pageSize, historyPage * pageSize);
 
   // ============================================================
-  // MANEJADORES DEL BUSCADOR CON TECLADO
+  // MANEJADORES DEL BUSCADOR CON TECLADO (CORREGIDO: ESC siempre limpia)
   // ============================================================
   const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // ESC siempre debe limpiar la búsqueda, incluso si no hay coincidencias
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      setSearch('');
+      setSelectedSearchIndex(-1);
+      return;
+    }
+
     const list = matches;
     if (list.length === 0) return;
 
@@ -1147,10 +1319,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       if (list[idx]) {
         agregar(list[idx].id);
       }
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      setSearch('');
-      setSelectedSearchIndex(-1);
     }
   };
 
@@ -1279,39 +1447,6 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                          <span className="text-[9px] font-black uppercase text-brand-gold-deep block mb-1">EQUIVALENTE EN BOLÍVARES</span>
                          <span className="text-2xl font-black text-brand-gold-deep">{Utils.fmtBS(selectedProductDisplay.precioUSD * state.tasa)}</span>
                        </div>
-
-                       {/* ===== NUEVO: VENTA POR MONTO (actualización automática) ===== */}
-                       <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-xl">
-                         <p className="text-[9px] font-black uppercase text-blue-700 text-center mb-2">VENTA POR MONTO (BS.)</p>
-                         <div className="flex items-center gap-2">
-                           <span className="text-ink font-black text-sm">Bs.</span>
-                           <input
-                             type="text"
-                             className="flex-1 h-8 px-2 text-center font-black text-sm bg-white border border-blue-300 rounded focus:ring-2 focus:ring-blue-400 focus:outline-none"
-                             placeholder="0,00"
-                             value={montoVentaBS}
-                             onChange={(e) => {
-                               const clean = e.target.value.replace(/[^0-9.]/g, '');
-                               setMontoVentaBS(clean);
-                             }}
-                           />
-                           <button
-                             onClick={() => {
-                               if (selectedProductDisplay && montoVentaBS) {
-                                 // Ya se actualiza automáticamente
-                               }
-                             }}
-                             className="h-8 px-3 bg-blue-600 text-white rounded font-black text-[10px] uppercase hover:bg-blue-700 transition-colors shrink-0"
-                           >
-                             Aplicar
-                           </button>
-                         </div>
-                         {cantidadCalculada !== null && cantidadCalculada > 0 && (
-                           <p className="text-[8px] text-blue-600 font-black text-center mt-1">
-                             {cantidadCalculada.toFixed(2)} {selectedProductDisplay.cantidad || 'und'} ≈ {Utils.fmtBS(parseFloat(montoVentaBS.replace(/\./g, '')) || 0)}
-                           </p>
-                         )}
-                       </div>
                     </div>
                   )}
                   {state.carrito.length > 0 && (
@@ -1339,7 +1474,12 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                     const prod = state.productos.find(p => p.id === item.productoId);
                     return (
                       <div key={i} className="grid grid-cols-[1fr_80px_70px_35px_80px_80px_80px_35px] gap-1 items-center px-3 py-3 bg-white border-b border-black/5 text-ink">
-                        <div className="truncate font-black text-xs uppercase leading-tight">{item.nombre}</div>
+                        <div className="truncate font-black text-xs uppercase leading-tight">
+                          {item.nombre}
+                          {item.esFraccion && (
+                            <span className="ml-2 text-[8px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-black uppercase">Fracción</span>
+                          )}
+                        </div>
                         <div className="flex justify-center">
                           <input
                             type="number"
@@ -1679,6 +1819,149 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                     </button>
                   )}
                </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== MODAL VENTA FRACCIONADA (CORREGIDO) ===== */}
+      {showFraccionSelector && (
+        <div className="modal show" style={{ zIndex: 200 }}>
+          <div className="modal-bg" onClick={() => {
+            setShowFraccionSelector(null);
+            setMontoFraccionBS(0);
+            setMlCalculados(0);
+          }}></div>
+          <div className="modal-box max-w-md bg-white border-2 border-line rounded-2xl overflow-hidden shadow-2xl">
+            <div className="modal-head py-3 px-5 border-b border-line bg-ink text-white flex justify-between items-center">
+              <h3 className="font-black text-xs uppercase tracking-widest flex items-center gap-2">
+                <FlaskConical className="w-4 h-4 text-brand-gold" /> Venta Fraccionada
+              </h3>
+              <button onClick={() => {
+                setShowFraccionSelector(null);
+                setMontoFraccionBS(0);
+                setMlCalculados(0);
+              }}><X className="w-4 h-4" /></button>
+            </div>
+            <div className="modal-body p-6 space-y-4">
+              <div className="text-center">
+                <p className="text-lg font-black text-ink uppercase">{showFraccionSelector.producto.nombre}</p>
+                <p className="text-[10px] text-ink/40">
+                  Stock: {showFraccionSelector.producto.stockML || 0} ml
+                  {showFraccionSelector.producto.volumenTotalML && (
+                    <span className="block text-[9px]">
+                      ({Math.floor((showFraccionSelector.producto.stockML || 0) / showFraccionSelector.producto.volumenTotalML)} botella(s) completas + 
+                      {(showFraccionSelector.producto.stockML || 0) % showFraccionSelector.producto.volumenTotalML} ml)
+                    </span>
+                  )}
+                </p>
+                <p className="text-[10px] text-ink/40">
+                  Precio por ml: {Utils.fmtUSD(showFraccionSelector.producto.precioUSD || 0)}
+                </p>
+              </div>
+              
+              <div className="space-y-4">
+                {/* Input para monto en Bs. */}
+                <div className="form-group">
+                  <label className="text-ink text-[10px] font-black uppercase block mb-1">Monto a Pagar (Bs.)</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-3 text-ink font-black">Bs.</span>
+                    <input
+                      type="number"
+                      className="form-input pl-12 h-12 text-xl font-black text-brand-gold-deep bg-white"
+                      value={montoFraccionBS || ''}
+                      onChange={e => {
+                        const val = parseFloat(e.target.value) || 0;
+                        setMontoFraccionBS(val);
+                        if (showFraccionSelector) {
+                          const ml = calcularFraccion(val, showFraccionSelector.producto);
+                          setMlCalculados(ml);
+                        }
+                      }}
+                      min={50}
+                      step={50}
+                      autoFocus
+                    />
+                  </div>
+                  <div className="flex justify-between text-[8px] font-black">
+                    <span className="text-ink/40">Mínimo: 50 ml</span>
+                    <span className="text-ink/40">
+                      Máximo: {Utils.fmtBS(((showFraccionSelector.producto.stockML || 0) * (showFraccionSelector.producto.precioUSD || 0)) * state.tasa)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Selector rápido de ml predefinidos */}
+                <div className="flex flex-wrap gap-2 justify-center">
+                  {[50, 100, 200, 300, 500, 750].map(ml => {
+                    const producto = showFraccionSelector.producto;
+                    const precioUSD = (producto.precioUSD || 0) * ml;
+                    const precioBS = precioUSD * state.tasa;
+                    return (
+                      <button
+                        key={ml}
+                        onClick={() => {
+                          setMontoFraccionBS(precioBS);
+                          setMlCalculados(ml);
+                        }}
+                        className={`px-3 py-1.5 rounded-lg border text-[9px] font-black uppercase transition-all ${
+                          Math.round(mlCalculados) === ml 
+                            ? 'bg-brand-gold text-black border-brand-gold' 
+                            : 'bg-white text-ink/60 border-line hover:border-brand-gold'
+                        }`}
+                      >
+                        {ml}ml
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Resumen */}
+                <div className="bg-surface-soft p-4 rounded-xl border border-line">
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div>
+                      <p className="text-[8px] font-black uppercase text-ink/40">Volumen</p>
+                      <p className="text-xl font-black text-ink">{mlCalculados.toFixed(0)} ml</p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] font-black uppercase text-ink/40">Total Bs.</p>
+                      <p className="text-xl font-black text-brand-gold-deep">{Utils.fmtBS(montoFraccionBS)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] font-black uppercase text-ink/40">Total USD</p>
+                      <p className="text-xl font-black text-ink">{Utils.fmtUSD(montoFraccionBS / state.tasa)}</p>
+                    </div>
+                  </div>
+                  {showFraccionSelector.producto.precioUSD && (
+                    <div className="mt-2 pt-2 border-t border-line/30 text-center">
+                      <span className="text-[8px] font-black text-ink/40">Precio por ml: </span>
+                      <span className="text-[10px] font-black text-brand-gold-deep">
+                        {Utils.fmtUSD(showFraccionSelector.producto.precioUSD)} ≈ {Utils.fmtBS(showFraccionSelector.producto.precioUSD * state.tasa)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="modal-foot p-4 bg-surface-soft border-t border-line flex justify-end gap-3">
+              <button 
+                onClick={() => {
+                  setShowFraccionSelector(null);
+                  setMontoFraccionBS(0);
+                  setMlCalculados(0);
+                }}
+                className="btn btn-secondary font-black uppercase text-[10px]"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={agregarFraccion}
+                disabled={montoFraccionBS <= 0 || mlCalculados <= 0}
+                className="btn btn-primary font-black uppercase text-[10px] flex items-center gap-2"
+              >
+                <ShoppingCart className="w-4 h-4" />
+                Agregar al Carrito
+              </button>
             </div>
           </div>
         </div>

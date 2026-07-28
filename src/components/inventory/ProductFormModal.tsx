@@ -3,7 +3,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { AppState, Product, KitItem } from '@/lib/types';
 import { Utils, Store } from '@/lib/db-store';
-import { X, Box, PlusCircle, MinusCircle, Search, Trash2 } from 'lucide-react';
+import { X, Box, PlusCircle, MinusCircle, Search, Trash2, FlaskConical, Percent, DollarSign } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -44,7 +44,12 @@ export function ProductFormModal({ producto, state, onClose, onSave, onUpdateLis
     kitType: producto?.kitType || 'stock_propio',
     kitItems: producto?.kitItems || [],
     proveedor: producto?.proveedor || '',
-    cantidad: producto?.cantidad || 'Unidad'
+    cantidad: producto?.cantidad || 'Unidad',
+    // ===== NUEVOS CAMPOS PARA VENTA FRACCIONADA =====
+    ventaFraccionada: producto?.ventaFraccionada || false,
+    volumenTotalML: producto?.volumenTotalML?.toString() ?? '',
+    precioTotalUSD: producto?.precioTotalUSD?.toString() ?? '',
+    stockML: producto?.stockML?.toString() ?? ''
   });
 
   const [kitSearch, setKitSearch] = useState('');
@@ -122,13 +127,22 @@ export function ProductFormModal({ producto, state, onClose, onSave, onUpdateLis
       return;
     }
 
+    // ===== VALIDACIÓN DE VENTA FRACCIONADA ELIMINADA =====
+    // El usuario puede definir volumen y precio total desde el kit o la sección de costos.
+    // Si quedan en 0, el POS mostrará error, pero es responsabilidad del usuario.
+
     const productData = {
       ...datos,
       costoUSD: parseFloat(datos.costoUSD) || 0,
       margen: parseFloat(datos.margen) || 0,
       precioUSD: parseFloat(datos.precioUSD) || 0,
       stock: parseFloat(datos.stock) || 0,
-      stockMinimo: parseFloat(datos.stockMinimo) || 0
+      stockMinimo: parseFloat(datos.stockMinimo) || 0,
+      // ===== CAMPOS DE VENTA FRACCIONADA =====
+      ventaFraccionada: datos.ventaFraccionada || false,
+      volumenTotalML: parseFloat(datos.volumenTotalML) || 0,
+      precioTotalUSD: parseFloat(datos.precioTotalUSD) || 0,
+      stockML: datos.ventaFraccionada ? (parseFloat(datos.stockML) || 0) : 0
     };
 
     // Guardar producto en Firestore
@@ -138,7 +152,8 @@ export function ProductFormModal({ producto, state, onClose, onSave, onUpdateLis
     if (!producto) {
       try {
         const productId = productData.id || Store.uid();
-        await initStockRTDB(productId, productData.stock || 0);
+        const stockInicial = datos.ventaFraccionada ? (parseFloat(datos.stockML) || 0) : (parseFloat(datos.stock) || 0);
+        await initStockRTDB(productId, stockInicial);
         console.log(`✅ Stock inicializado en RTDB para producto: ${productData.nombre}`);
       } catch (error) {
         console.error('Error al inicializar stock en RTDB:', error);
@@ -235,6 +250,22 @@ export function ProductFormModal({ producto, state, onClose, onSave, onUpdateLis
                  <div className="flex items-center gap-3 p-4 bg-surface-soft rounded-xl border border-line">
                    <button onClick={() => setDatos({...datos, aplicaIVA: !datos.aplicaIVA})} className={`w-12 h-6 rounded-full transition-all relative ${datos.aplicaIVA ? 'bg-status-success' : 'bg-ink/20'}`}><div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${datos.aplicaIVA ? 'right-1' : 'left-1'}`} /></button>
                    <Label className="text-[10px] font-black uppercase text-ink cursor-pointer" onClick={() => setDatos({...datos, aplicaIVA: !datos.aplicaIVA})}>Aplica IVA (16%)</Label>
+                 </div>
+
+                 {/* ===== SECCIÓN VENTA FRACCIONADA (SOLO EL SWITCH) ===== */}
+                 <div className="border-t border-line pt-4 mt-2">
+                   <div className="flex items-center gap-3 p-3 bg-purple-50 rounded-xl border border-purple-200">
+                     <button 
+                       onClick={() => setDatos({...datos, ventaFraccionada: !datos.ventaFraccionada})} 
+                       className={`w-12 h-6 rounded-full transition-all relative ${datos.ventaFraccionada ? 'bg-purple-600' : 'bg-ink/20'}`}
+                     >
+                       <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${datos.ventaFraccionada ? 'right-1' : 'left-1'}`} />
+                     </button>
+                     <Label className="text-[10px] font-black uppercase text-ink cursor-pointer" onClick={() => setDatos({...datos, ventaFraccionada: !datos.ventaFraccionada})}>
+                       Venta Fraccionada (por ml)
+                     </Label>
+                     <FlaskConical className="w-4 h-4 text-purple-600 ml-auto" />
+                   </div>
                  </div>
               </div>
             </div>

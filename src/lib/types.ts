@@ -75,6 +75,12 @@ export interface Product {
   observations?: string;
   createdAt?: string;
   updatedAt?: string;
+
+  // ========== NUEVOS CAMPOS PARA VENTA FRACCIONADA ==========
+  ventaFraccionada?: boolean;      // ✅ Si se permite vender fracciones
+  volumenTotalML?: number;         // ✅ Volumen total del producto en ml (ej: 1000)
+  precioTotalUSD?: number;         // ✅ Precio total en USD (ej: 3.50)
+  stockML?: number;                // ✅ Stock en ml (ej: 40000 para 40 botellas)
 }
 
 export interface PriceTier {
@@ -107,6 +113,10 @@ export interface SaleItem {
   cantidad: number;
   precioUnitUSD: number;
   subtotalUSD: number;
+  // ========== NUEVO: PARA VENTA FRACCIONADA ==========
+  volumenML?: number;      // ✅ Volumen en ml vendido
+  montoBS?: number;        // ✅ Monto en Bs. pagado por la fracción
+  esFraccion?: boolean;    // ✅ TRUE = venta fraccionada, FALSE o undefined = botella completa
 }
 
 export interface PagoRealizado {
