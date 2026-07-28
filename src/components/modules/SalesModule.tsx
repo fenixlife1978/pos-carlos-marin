@@ -1169,13 +1169,40 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         <button onClick={() => setView('returns')} className={`btn btn-sm ${view === 'returns' ? 'btn-primary shadow-md' : 'bg-white text-ink font-bold border-line border'}`}><RotateCcw className="w-3.5 h-3.5"/> Devoluciones y Anulaciones</button>
         
         {view === 'pos' && (
-          <button 
-            onClick={() => setIsFullScreen(!isFullScreen)} 
-            className="btn btn-sm bg-white text-ink font-bold border-line border ml-auto hover:bg-brand-gold-soft transition-colors"
-            title={isFullScreen ? "Minimizar" : "Expandir Pantalla Completa"}
-          >
-            {isFullScreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-          </button>
+          <div className="flex items-center gap-2 ml-auto">
+            <button 
+              onClick={() => setIsFullScreen(!isFullScreen)} 
+              className="btn btn-sm bg-white text-ink font-bold border-line border hover:bg-brand-gold-soft transition-colors"
+              title={isFullScreen ? "Minimizar" : "Expandir Pantalla Completa"}
+            >
+              {isFullScreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+            </button>
+            
+            {/* ✅ BOTÓN DE LIMPIAR CACHÉ - SOLO EN VISTA POS */}
+            <button 
+              onClick={() => {
+                // Limpiar caché de productos
+                localStorage.removeItem('posven_productos_cache');
+                localStorage.removeItem('posven_productos_timestamp');
+                // Limpiar estado local de productos (fuerza recarga desde Firestore)
+                updateState({ productos: [] });
+                toast({
+                  title: "🗑️ Caché de Productos Limpiado",
+                  description: "Los productos se recargarán desde la nube automáticamente.",
+                  duration: 3000
+                });
+                // Recargar la página después de 1 segundo para refrescar todo
+                setTimeout(() => {
+                  window.location.reload();
+                }, 1000);
+              }}
+              className="btn btn-sm bg-status-warn-soft text-status-warn font-black border border-status-warn/30 hover:bg-status-warn hover:text-white transition-colors"
+              title="Limpiar caché de productos (forzar recarga desde Firestore)"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Limpiar Caché</span>
+            </button>
+          </div>
         )}
       </div>
 
