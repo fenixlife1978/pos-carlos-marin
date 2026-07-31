@@ -77,10 +77,14 @@ export interface Product {
   updatedAt?: string;
 
   // ========== NUEVOS CAMPOS PARA VENTA FRACCIONADA ==========
-  ventaFraccionada?: boolean;      // ✅ Si se permite vender fracciones
-  volumenTotalML?: number;         // ✅ Volumen total del producto en ml (ej: 1000)
-  precioTotalUSD?: number;         // ✅ Precio total en USD (ej: 3.50)
-  stockML?: number;                // ✅ Stock en ml (ej: 40000 para 40 botellas)
+  ventaFraccionada?: boolean;
+  volumenTotalML?: number;
+  precioTotalUSD?: number;
+  stockML?: number;
+
+  // ========== NUEVOS CAMPOS PARA UNIDAD DE STOCK ==========
+  volumenPorUnidad?: number;   // ml por unidad (ej: 1000 para botella de 1L)
+  unidadStock?: string;        // 'unidades' | 'ml' | 'litros'
 }
 
 export interface PriceTier {
@@ -114,9 +118,9 @@ export interface SaleItem {
   precioUnitUSD: number;
   subtotalUSD: number;
   // ========== NUEVO: PARA VENTA FRACCIONADA ==========
-  volumenML?: number;      // ✅ Volumen en ml vendido
-  montoBS?: number;        // ✅ Monto en Bs. pagado por la fracción
-  esFraccion?: boolean;    // ✅ TRUE = venta fraccionada, FALSE o undefined = botella completa
+  volumenML?: number;
+  montoBS?: number;
+  esFraccion?: boolean;
 }
 
 export interface PagoRealizado {
@@ -204,9 +208,9 @@ export interface Terminal {
   usuarioId: string | null;
   activo: boolean;
   proximoRecibo: number;
-  proximaDevolucion: number;    // 🔑 Contador para devoluciones de este terminal
-  proximaAnulacion: number;     // 🔑 Contador para anulaciones de este terminal
-  proximaVentaEfectivo: number; // 🔑 Contador para ventas de efectivo de este terminal
+  proximaDevolucion: number;
+  proximaAnulacion: number;
+  proximaVentaEfectivo: number;
 }
 
 export interface Supplier {
@@ -373,7 +377,6 @@ export interface AppState {
   fondoCajaHoyUSD: number;
   fondoCajaHoyBS: number;
   
-  // ========== PROPIEDADES PARA CASH MODULE ==========
   isCashOpen: boolean;
   cashData: CashSession | null;
   cashHistory: CashSession[];
@@ -390,7 +393,6 @@ export interface AppState {
   presentaciones: string[];
   proveedores: Supplier[];
   
-  // ========== NUEVAS PROPIEDADES PARA ProductForm ==========
   config: Config;
   productCategories: string[];
   productUnits: string[];

@@ -47,6 +47,7 @@ import {
   exportarPDFDevoluciones
 } from '@/lib/pdf-generator';
 import { ProductFormModal } from '@/components/inventory/ProductFormModal';
+import { toast } from '@/hooks/use-toast';
 
 // ============================================================
 // HELPERS DE FORMATO PARA ML (CORREGIDOS)
@@ -117,12 +118,30 @@ export function InventoryModule({ state, updateState }: { state: AppState, updat
     return p.stock <= (p.stockMinimo || 0);
   }).length;
 
+  // ============================================================
+  // FUNCIÓN ELIMINAR (CORREGIDA: elimina de Firestore y cache)
+  // ============================================================
   const eliminar = async (id: string) => {
-    if (!confirm('¿Seguro que desea eliminar este producto?')) return;
+    if (!confirm('¿Seguro que desea eliminar este producto de forma permanente? Esta acción no se puede deshacer.')) return;
     const producto = state.productos.find(p => p.id === id);
-    if (producto) {
-      const productoInactivo = { ...producto, activo: false };
-      await Collections.set('productos', id, productoInactivo);
+    if (!producto) return;
+    try {
+      // Eliminar producto de Firestore
+      await Collections.delete('productos', id);
+      // Eliminar movimientos relacionados de Firestore
+      const movs = state.movimientos.filter(m => m.productoId === id);
+      for (const mov of movs) {
+        await Collections.delete('movimientos', mov.id);
+      }
+      // Actualizar estado local (cache)
+      updateState({
+        productos: state.productos.filter(p => p.id !== id),
+        movimientos: state.movimientos.filter(m => m.productoId !== id)
+      });
+      toast({ title: `Producto "${producto.nombre}" eliminado permanentemente` });
+    } catch (error) {
+      console.error('Error al eliminar producto:', error);
+      toast({ variant: 'destructive', title: 'Error al eliminar producto' });
     }
   };
 

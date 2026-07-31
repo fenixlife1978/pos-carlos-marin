@@ -405,7 +405,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   }, [state.cxc]);
 
   // ============================================================
-  // FUNCIÓN GET STOCK DISPONIBLE (incluye venta fraccionada)
+  // FUNCIÓN GET STOCK DISPONIBLE (CORREGIDA con optional chaining)
   // ============================================================
   const getStockDisponible = (p: Product) => {
     // Si es venta fraccionada, retornar stock en ml
@@ -414,7 +414,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     }
     
     let avail = p.stock || 0;
-    if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems) {
+    if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems && p.kitItems.length > 0) {
       let compPossible = Infinity;
       p.kitItems.forEach(ki => {
         const cp = state.productos.find(c => c.id === ki.productoId);
@@ -424,6 +424,40 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       if (compPossible !== Infinity) avail = compPossible;
     }
     return avail;
+  };
+
+  // ============================================================
+  // NUEVA FUNCIÓN: OBTENER STOCK EN ML REAL (para kits virtuales)
+  // ============================================================
+  const getStockMLDisponible = (p: Product): number => {
+    // Si el producto tiene stockML propio, usarlo
+    if (p.stockML !== undefined && p.stockML > 0) {
+      return p.stockML;
+    }
+    
+    // Si es un kit virtual con componentes, buscar el stock en ml del primer componente
+    if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems && p.kitItems.length > 0) {
+      // Buscar el primer componente que tenga stockML
+      for (const ki of p.kitItems) {
+        const cp = state.productos.find(c => c.id === ki.productoId);
+        if (cp && cp.stockML !== undefined && cp.stockML > 0) {
+          return cp.stockML;
+        }
+      }
+    }
+    
+    return 0;
+  };
+
+  // ============================================================
+  // FUNCIÓN OBTENER COMPONENTE PRINCIPAL PARA KIT VIRTUAL
+  // ============================================================
+  const getComponentePrincipal = (p: Product): Product | null => {
+    if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems && p.kitItems.length > 0) {
+      const cp = state.productos.find(c => c.id === p.kitItems?.[0]?.productoId);
+      return cp || null;
+    }
+    return null;
   };
 
   // ============================================================
@@ -479,7 +513,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   };
 
   // ============================================================
-  // FUNCIÓN AGREGAR FRACCIÓN AL CARRITO
+  // FUNCIÓN AGREGAR FRACCIÓN AL CARRITO (CORREGIDA: usa getStockMLDisponible)
   // ============================================================
   const agregarFraccion = () => {
     if (!showFraccionSelector) return;
@@ -489,8 +523,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     const montoBS = montoFraccionBS;
     const montoUSD = montoBS / state.tasa;
     
-    // Verificar stock disponible en ml
-    const stockDisponibleML = p.stockML || 0;
+    // Verificar stock disponible en ml (usa stock real del componente si es kit virtual)
+    const stockDisponibleML = getStockMLDisponible(p);
     if (mlAVender > stockDisponibleML) {
       const botellasCompletas = Math.floor(stockDisponibleML / 1000);
       const mlRestantes = stockDisponibleML % 1000;
@@ -744,22 +778,35 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
           vExento += item.subtotalUSD; 
         }
         
-        // ===== VENTA FRACCIONADA (descuenta en ml) =====
+        // ===== VENTA FRACCIONADA =====
         if (p.ventaFraccionada && item.esFraccion && item.volumenML) {
-          const nuevoStockML = (p.stockML || 0) - item.volumenML;
-          const pActualizado = { ...p, stockML: nuevoStockML };
-          await Collections.set('productos', p.id, pActualizado);
+          let stockMLActual = p.stockML || 0;
+          let productoActualizar = p;
+          let componentePrincipal = null;
+          
+          // Si es kit virtual, descontar del componente principal
+          if (p.isKit && p.kitType === 'stock_componentes') {
+            componentePrincipal = getComponentePrincipal(p);
+            if (componentePrincipal) {
+              stockMLActual = componentePrincipal.stockML || 0;
+              productoActualizar = componentePrincipal;
+            }
+          }
+          
+          const nuevoStockML = stockMLActual - item.volumenML;
+          const pActualizado = { ...productoActualizar, stockML: nuevoStockML };
+          await Collections.set('productos', productoActualizar.id, pActualizado);
           prodsActualizados.push(pActualizado);
           
           const mov: Movimiento = {
             id: Store.uid(),
-            productoId: item.productoId,
+            productoId: productoActualizar.id,
             tipo: 'venta',
             cantidad: -item.volumenML,
-            stockAntes: p.stockML || 0,
+            stockAntes: stockMLActual,
             stockDespues: nuevoStockML,
             fecha: ahoraStr,
-            referencia: `VENTA FRACCIONADA ${reciboId} - ${item.volumenML}ml`,
+            referencia: `VENTA FRACCIONADA ${reciboId} - ${item.volumenML}ml (desde kit: ${p.nombre})`,
             terminalId: terminal?.id || 'GLOBAL'
           };
           await Collections.set('movimientos', mov.id, mov);
@@ -767,8 +814,8 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
           continue;
         }
         
-        // ===== KITS =====
-        if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems) {
+        // ===== KITS (normales, no fraccionados) =====
+        if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems && p.kitItems.length > 0) {
           for (const ki of p.kitItems) {
             const cp = state.productos.find(c => c.id === ki.productoId);
             if (cp) {
@@ -998,19 +1045,32 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         
         // ===== VENTA FRACCIONADA =====
         if (p.ventaFraccionada && item.esFraccion && item.volumenML) {
-          const nuevoStockML = (p.stockML || 0) - item.volumenML;
-          const pActualizado = { ...p, stockML: nuevoStockML };
-          await Collections.set('productos', p.id, pActualizado);
+          let stockMLActual = p.stockML || 0;
+          let productoActualizar = p;
+          let componentePrincipal = null;
+          
+          // Si es kit virtual, descontar del componente principal
+          if (p.isKit && p.kitType === 'stock_componentes') {
+            componentePrincipal = getComponentePrincipal(p);
+            if (componentePrincipal) {
+              stockMLActual = componentePrincipal.stockML || 0;
+              productoActualizar = componentePrincipal;
+            }
+          }
+          
+          const nuevoStockML = stockMLActual - item.volumenML;
+          const pActualizado = { ...productoActualizar, stockML: nuevoStockML };
+          await Collections.set('productos', productoActualizar.id, pActualizado);
           
           const mov: Movimiento = {
             id: Store.uid(),
-            productoId: item.productoId,
+            productoId: productoActualizar.id,
             tipo: 'venta',
             cantidad: -item.volumenML,
-            stockAntes: p.stockML || 0,
+            stockAntes: stockMLActual,
             stockDespues: nuevoStockML,
             fecha: ahoraStr,
-            referencia: `VENTA FRACCIONADA ${reciboId} - ${item.volumenML}ml`,
+            referencia: `VENTA FRACCIONADA ${reciboId} - ${item.volumenML}ml (desde kit: ${p.nombre})`,
             terminalId: terminal?.id || 'GLOBAL'
           };
           await Collections.set('movimientos', mov.id, mov);
@@ -1018,7 +1078,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
           continue;
         }
         
-        if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems) {
+        if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems && p.kitItems.length > 0) {
           for (const ki of p.kitItems) {
             const cp = state.productos.find(c => c.id === ki.productoId);
             if (cp) {
@@ -1847,13 +1907,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
               <div className="text-center">
                 <p className="text-lg font-black text-ink uppercase">{showFraccionSelector.producto.nombre}</p>
                 <p className="text-[10px] text-ink/40">
-                  Stock: {showFraccionSelector.producto.stockML || 0} ml
-                  {showFraccionSelector.producto.volumenTotalML && (
-                    <span className="block text-[9px]">
-                      ({Math.floor((showFraccionSelector.producto.stockML || 0) / showFraccionSelector.producto.volumenTotalML)} botella(s) completas + 
-                      {(showFraccionSelector.producto.stockML || 0) % showFraccionSelector.producto.volumenTotalML} ml)
-                    </span>
-                  )}
+                  Stock: {getStockMLDisponible(showFraccionSelector.producto)} ml
                 </p>
                 <p className="text-[10px] text-ink/40">
                   Precio por ml: {Utils.fmtUSD(showFraccionSelector.producto.precioUSD || 0)}
@@ -1886,7 +1940,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                   <div className="flex justify-between text-[8px] font-black">
                     <span className="text-ink/40">Mínimo: 50 ml</span>
                     <span className="text-ink/40">
-                      Máximo: {Utils.fmtBS(((showFraccionSelector.producto.stockML || 0) * (showFraccionSelector.producto.precioUSD || 0)) * state.tasa)}
+                      Máximo: {Utils.fmtBS((getStockMLDisponible(showFraccionSelector.producto) * (showFraccionSelector.producto.precioUSD || 0)) * state.tasa)}
                     </span>
                   </div>
                 </div>

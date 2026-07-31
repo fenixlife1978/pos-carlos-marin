@@ -49,7 +49,10 @@ export function ProductFormModal({ producto, state, onClose, onSave, onUpdateLis
     ventaFraccionada: producto?.ventaFraccionada || false,
     volumenTotalML: producto?.volumenTotalML?.toString() ?? '',
     precioTotalUSD: producto?.precioTotalUSD?.toString() ?? '',
-    stockML: producto?.stockML?.toString() ?? ''
+    stockML: producto?.stockML?.toString() ?? '',
+    // ===== NUEVOS CAMPOS PARA STOCK EN ML =====
+    volumenPorUnidad: producto?.volumenPorUnidad?.toString() ?? '1',
+    unidadStock: producto?.unidadStock || 'unidades'
   });
 
   const [kitSearch, setKitSearch] = useState('');
@@ -127,33 +130,44 @@ export function ProductFormModal({ producto, state, onClose, onSave, onUpdateLis
       return;
     }
 
-    // ===== VALIDACIÓN DE VENTA FRACCIONADA ELIMINADA =====
-    // El usuario puede definir volumen y precio total desde el kit o la sección de costos.
-    // Si quedan en 0, el POS mostrará error, pero es responsabilidad del usuario.
+    // ===== CÁLCULO DE STOCKML SIEMPRE =====
+    const stockNum = parseFloat(datos.stock) || 0;
+    const volumenPorUnidadNum = parseFloat(datos.volumenPorUnidad) || 1;
+    let stockMLCalculado = 0;
+
+    if (datos.unidadStock === 'ml') {
+      stockMLCalculado = stockNum;
+    } else if (datos.unidadStock === 'litros') {
+      stockMLCalculado = stockNum * 1000;
+    } else {
+      // 'unidades' o cualquier otro
+      stockMLCalculado = stockNum * volumenPorUnidadNum;
+    }
 
     const productData = {
       ...datos,
       costoUSD: parseFloat(datos.costoUSD) || 0,
       margen: parseFloat(datos.margen) || 0,
       precioUSD: parseFloat(datos.precioUSD) || 0,
-      stock: parseFloat(datos.stock) || 0,
+      stock: stockNum,
       stockMinimo: parseFloat(datos.stockMinimo) || 0,
       // ===== CAMPOS DE VENTA FRACCIONADA =====
       ventaFraccionada: datos.ventaFraccionada || false,
       volumenTotalML: parseFloat(datos.volumenTotalML) || 0,
       precioTotalUSD: parseFloat(datos.precioTotalUSD) || 0,
-      stockML: datos.ventaFraccionada ? (parseFloat(datos.stockML) || 0) : 0
+      // ===== STOCKML SIEMPRE CALCULADO =====
+      stockML: stockMLCalculado,
+      volumenPorUnidad: volumenPorUnidadNum,
+      unidadStock: datos.unidadStock || 'unidades'
     };
 
-    // Guardar producto en Firestore
     await onSave(productData);
 
-    // 🔑 INICIALIZAR STOCK EN RTDB (solo si es producto nuevo, no edición)
     if (!producto) {
       try {
         const productId = productData.id || Store.uid();
-        const stockInicial = datos.ventaFraccionada ? (parseFloat(datos.stockML) || 0) : (parseFloat(datos.stock) || 0);
-        await initStockRTDB(productId, stockInicial);
+        // Para RTDB, usar stockMLCalculado como stock inicial en ml
+        await initStockRTDB(productId, stockMLCalculado);
         console.log(`✅ Stock inicializado en RTDB para producto: ${productData.nombre}`);
       } catch (error) {
         console.error('Error al inicializar stock en RTDB:', error);
@@ -247,12 +261,40 @@ export function ProductFormModal({ producto, state, onClose, onSave, onUpdateLis
                      <Input className="bg-transparent border-none text-center font-black text-xl w-full text-status-danger focus:outline-none" value={datos.stockMinimo} onChange={e => setDatos({...datos, stockMinimo: e.target.value})} />
                    </div>
                  </div>
+
+                 <div className="p-3 bg-surface-soft rounded-xl border border-line">
+                   <div className="grid grid-cols-2 gap-3">
+                     <div className="space-y-1">
+                       <Label className="text-[9px] font-black uppercase text-ink/50 block">Volumen por unidad (ml)</Label>
+                       <Input 
+                         className="h-9 font-black bg-white text-sm" 
+                         value={datos.volumenPorUnidad}
+                         onChange={e => setDatos({...datos, volumenPorUnidad: e.target.value})}
+                         placeholder="Ej: 1000 (1L)"
+                       />
+                       <p className="text-[7px] text-ink/40">Si el stock está en ml, colocar 1</p>
+                     </div>
+                     <div className="space-y-1">
+                       <Label className="text-[9px] font-black uppercase text-ink/50 block">Unidad de stock</Label>
+                       <select 
+                         className="form-select h-9 text-xs font-bold bg-white"
+                         value={datos.unidadStock}
+                         onChange={e => setDatos({...datos, unidadStock: e.target.value})}
+                       >
+                         <option value="unidades">Unidades</option>
+                         <option value="ml">Mililitros</option>
+                         <option value="litros">Litros</option>
+                       </select>
+                       <p className="text-[7px] text-ink/40">Cómo se mide el stock</p>
+                     </div>
+                   </div>
+                 </div>
+
                  <div className="flex items-center gap-3 p-4 bg-surface-soft rounded-xl border border-line">
                    <button onClick={() => setDatos({...datos, aplicaIVA: !datos.aplicaIVA})} className={`w-12 h-6 rounded-full transition-all relative ${datos.aplicaIVA ? 'bg-status-success' : 'bg-ink/20'}`}><div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${datos.aplicaIVA ? 'right-1' : 'left-1'}`} /></button>
                    <Label className="text-[10px] font-black uppercase text-ink cursor-pointer" onClick={() => setDatos({...datos, aplicaIVA: !datos.aplicaIVA})}>Aplica IVA (16%)</Label>
                  </div>
 
-                 {/* ===== SECCIÓN VENTA FRACCIONADA (SOLO EL SWITCH) ===== */}
                  <div className="border-t border-line pt-4 mt-2">
                    <div className="flex items-center gap-3 p-3 bg-purple-50 rounded-xl border border-purple-200">
                      <button 
