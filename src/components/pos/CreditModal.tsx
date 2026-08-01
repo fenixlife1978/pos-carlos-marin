@@ -85,9 +85,21 @@ interface CreditModalProps {
   onClose: () => void;
   onConfirm: (customer: Customer, amount: number) => void;
   totalAmount: number;
+  // ===== NUEVAS PROPS (opcionales para compatibilidad) =====
+  clients?: Customer[];
+  debts?: Debt[];
+  initialClientName?: string;
 }
 
-export function CreditModal({ isOpen, onClose, onConfirm, totalAmount }: CreditModalProps) {
+export function CreditModal({ 
+  isOpen, 
+  onClose, 
+  onConfirm, 
+  totalAmount,
+  clients: propClients,
+  debts: propDebts,
+  initialClientName 
+}: CreditModalProps) {
   const { toast } = useToast();
   const [store, setStore] = useState<any>(Store.get());
 
@@ -108,6 +120,17 @@ export function CreditModal({ isOpen, onClose, onConfirm, totalAmount }: CreditM
   const addressInputRef = useRef<HTMLInputElement>(null);
   const createButtonRef = useRef<HTMLButtonElement>(null);
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
+
+  // ===== OBTENER CLIENTES Y DEUDAS DE PROPS O STORE =====
+  const getClients = (): Customer[] => {
+    if (propClients) return propClients;
+    return store.clientes || [];
+  };
+
+  const getDebts = (): Debt[] => {
+    if (propDebts) return propDebts;
+    return store.cxc || [];
+  };
 
   useEffect(() => {
     const unsubscribe = Store.subscribe(setStore);
@@ -149,24 +172,30 @@ export function CreditModal({ isOpen, onClose, onConfirm, totalAmount }: CreditM
     }
   };
 
+  // ============================================================
+  // FUNCIÓN DE BÚSQUEDA CORREGIDA (usa props)
+  // ============================================================
   const findCustomer = (fullDoc: string): Customer | null => {
     const raw = getRawCedula(fullDoc);
+    const customers = getClients();
+    const debts = getDebts();
+
+    // Buscar en clientes
     let customer: Customer | null = null;
-    
-    const customers: Customer[] = store.clientes || [];
     const found = customers.find(c => getRawCedula(c.cedula) === raw);
     if (found) {
       customer = { ...found };
     }
-    
-    const deudas: Debt[] = store.cxc || [];
-    const deudasCliente = deudas.filter(d => {
+
+    // Buscar en deudas para obtener saldo
+    const deudasCliente = debts.filter(d => {
       if (!d.cliente) return false;
       const match = d.cliente.match(/^(.*?)\s*\[(.*?)\]$/);
       return match && getRawCedula(match[2]) === raw;
     });
     const totalDeuda = deudasCliente.reduce((sum, d) => sum + (d.saldoUSD || 0), 0);
-    
+
+    // Si no existe en clientes pero tiene deudas, crear un cliente virtual
     if (!customer) {
       if (deudasCliente.length > 0) {
         const primera = deudasCliente[0];
@@ -185,9 +214,10 @@ export function CreditModal({ isOpen, onClose, onConfirm, totalAmount }: CreditM
         }
       }
     } else {
+      // Actualizar deuda del cliente existente
       customer.debt = totalDeuda;
     }
-    
+
     return customer;
   };
 
@@ -211,8 +241,12 @@ export function CreditModal({ isOpen, onClose, onConfirm, totalAmount }: CreditM
 
   const handleConfirmCharge = () => {
     if (foundCustomer) {
-      const customers: Customer[] = store.clientes || [];
+      // Verificar si el cliente ya existe en la base de datos (para evitar duplicados)
+      const customers = getClients();
       const exists = customers.some(c => getRawCedula(c.cedula) === getRawCedula(foundCustomer.cedula));
+      
+      // Si no existe, se crea automáticamente (pero ya debería existir porque lo encontramos)
+      // Sin embargo, si se encontró solo por deudas, puede que no esté en clientes, entonces lo creamos.
       if (!exists) {
         const cedulaNormalizada = normalizeCedula(foundCustomer.cedula, extractDocType(foundCustomer.cedula));
         const newCustomer: Customer = {
@@ -224,7 +258,9 @@ export function CreditModal({ isOpen, onClose, onConfirm, totalAmount }: CreditM
           debt: foundCustomer.debt || 0
         };
         const updatedCustomers = [...customers, newCustomer];
+        // Actualizar store local
         Store.set({ ...store, clientes: updatedCustomers });
+        // Actualizar estado local para reflejar el nuevo cliente
         setFoundCustomer({ ...newCustomer });
         onConfirm(newCustomer, totalAmount);
       } else {
@@ -244,10 +280,12 @@ export function CreditModal({ isOpen, onClose, onConfirm, totalAmount }: CreditM
       return;
     }
 
-    const customers: Customer[] = store.clientes || [];
-    const deudas: Debt[] = store.cxc || [];
+    const customers = getClients();
+    const debts = getDebts();
+
+    // Verificar si ya existe (en clientes o en deudas)
     const exists = customers.some(c => getRawCedula(c.cedula) === raw) ||
-                   deudas.some(d => {
+                   debts.some(d => {
                      if (!d.cliente) return false;
                      const match = d.cliente.match(/^(.*?)\s*\[(.*?)\]$/);
                      return match && getRawCedula(match[2]) === raw;
