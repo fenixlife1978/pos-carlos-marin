@@ -106,6 +106,7 @@ export function CreditModal({
   const [view, setView] = useState<'search' | 'found' | 'create'>('search');
   const [docType, setDocType] = useState('V-');
   const [docNumber, setDocNumber] = useState('');
+  const [searchName, setSearchName] = useState('');
   const [foundCustomer, setFoundCustomer] = useState<Customer | null>(null);
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
@@ -142,6 +143,7 @@ export function CreditModal({
       setView('search');
       setDocType('V-');
       setDocNumber('');
+      setSearchName('');
       setFoundCustomer(null);
       setNewName('');
       setNewPhone('');
@@ -161,6 +163,7 @@ export function CreditModal({
     const clean = value.replace(/[^0-9]/g, '');
     const formatted = normalizeCedula(clean, docType);
     setDocNumber(formatted);
+    if (formatted) setSearchName('');
   };
 
   const handleDocTypeChange = (type: string) => {
@@ -222,22 +225,47 @@ export function CreditModal({
   };
 
   const handleSearch = () => {
-    if (!docNumber.trim()) {
-      toast({ title: "Documento Requerido", description: "Por favor, ingrese un documento de identidad.", variant: "destructive" });
-      return;
+    const trimmedDoc = docNumber.trim();
+    const trimmedName = searchName.trim();
+
+    if (!trimmedDoc && !trimmedName) {
+        toast({ title: "Criterio Requerido", description: "Por favor, ingrese un documento o un nombre.", variant: "destructive" });
+        return;
     }
-    const cleanDoc = docNumber.replace(/\./g, '');
-    const fullDoc = `${docType}${cleanDoc}`;
-    
-    const customer = findCustomer(fullDoc);
-    if (customer) {
-      setFoundCustomer(customer);
-      setView('found');
-    } else {
-      setFoundCustomer(null);
-      setView('create');
+
+    let customer: Customer | null = null;
+
+    if (trimmedDoc) {
+        const cleanDoc = trimmedDoc.replace(/\./g, '');
+        const fullDoc = `${docType}${cleanDoc}`;
+        customer = findCustomer(fullDoc);
+        if (customer) {
+            setFoundCustomer(customer);
+            setView('found');
+        } else {
+            setFoundCustomer(null);
+            setView('create');
+        }
+    } else if (trimmedName) {
+        const customers = getClients();
+        const nameToSearch = trimmedName.toLowerCase();
+        const foundByName = customers.find(c => c.name.toLowerCase().includes(nameToSearch));
+
+        if (foundByName && foundByName.cedula) {
+            customer = findCustomer(foundByName.cedula);
+            setFoundCustomer(customer);
+            setView('found');
+        } else {
+            toast({ 
+                title: "Cliente no encontrado", 
+                description: `No se encontró un cliente que coincida con "${trimmedName}". Intente con el documento de identidad.`,
+                variant: "destructive" 
+            });
+            return;
+        }
     }
   };
+
 
   const handleConfirmCharge = () => {
     if (foundCustomer) {
@@ -378,43 +406,67 @@ export function CreditModal({
           {/* PASO 1: BÚSQUEDA */}
           {/* ============================================================ */}
           {view === 'search' && (
-            <div className="space-y-2">
-              <div>
-                <label htmlFor="doc-input" className="block text-[10px] font-bold text-gray-500">Documento de Identidad</label>
-                <div className="flex items-center gap-2 mt-1">
-                  <select 
-                    value={docType} 
-                    onChange={e => handleDocTypeChange(e.target.value)} 
-                    className="h-9 bg-gray-100 border border-gray-300 rounded-lg px-2 font-bold text-gray-700 focus:ring-2 focus:ring-[#D4A017] outline-none text-sm w-[70px]"
-                  >
-                    <option>V-</option> <option>E-</option> <option>J-</option> <option>G-</option>
-                  </select>
-                  <input
-                    ref={searchInputRef}
-                    id="doc-input"
-                    type="text"
-                    value={docNumber}
-                    onChange={(e) => handleDocNumberChange(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                    placeholder={docType === 'V-' || docType === 'E-' ? "XX.XXX.XXX" : "Número de identificación"}
-                    className="flex-1 h-9 px-3 bg-white border border-gray-300 rounded-lg font-medium focus:ring-2 focus:ring-[#D4A017] outline-none text-sm"
-                  />
-                  <button 
-                    onClick={handleSearch} 
-                    className="h-9 px-3 bg-blue-600 text-white rounded-lg font-bold flex items-center justify-center hover:bg-blue-700 transition-all shrink-0"
-                  >
-                    <Search className="w-4 h-4" />
-                  </button>
+            <div className="space-y-3">
+                <div>
+                    <label htmlFor="doc-input" className="block text-[10px] font-bold text-gray-500">Documento de Identidad</label>
+                    <div className="flex items-center gap-2 mt-1">
+                        <select 
+                            value={docType} 
+                            onChange={e => handleDocTypeChange(e.target.value)} 
+                            className="h-9 bg-gray-100 border border-gray-300 rounded-lg px-2 font-bold text-gray-700 focus:ring-2 focus:ring-[#D4A017] outline-none text-sm w-[70px]"
+                        >
+                            <option>V-</option> <option>E-</option> <option>J-</option> <option>G-</option>
+                        </select>
+                        <input
+                            ref={searchInputRef}
+                            id="doc-input"
+                            type="text"
+                            value={docNumber}
+                            onChange={(e) => handleDocNumberChange(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                            placeholder={docType === 'V-' || docType === 'E-' ? "XX.XXX.XXX" : "Número de identificación"}
+                            className="flex-1 h-9 px-3 bg-white border border-gray-300 rounded-lg font-medium focus:ring-2 focus:ring-[#D4A017] outline-none text-sm"
+                        />
+                    </div>
                 </div>
-              </div>
-              <div className="flex justify-end">
-                <button
-                  onClick={onClose}
-                  className="px-4 py-1.5 bg-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-300 transition-colors text-sm"
-                >
-                  Cancelar
-                </button>
-              </div>
+
+                <div className="relative flex items-center py-1">
+                    <div className="flex-grow border-t border-gray-200"></div>
+                    <span className="flex-shrink mx-2 text-xs text-gray-400">O</span>
+                    <div className="flex-grow border-t border-gray-200"></div>
+                </div>
+
+                <div>
+                    <label htmlFor="name-search-input" className="block text-[10px] font-bold text-gray-500">Buscar por Nombre de Cliente</label>
+                    <input
+                        id="name-search-input"
+                        type="text"
+                        value={searchName}
+                        onChange={(e) => {
+                            setSearchName(e.target.value);
+                            if (e.target.value) setDocNumber('');
+                        }}
+                        onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                        placeholder="Ej: Juan Perez"
+                        className="w-full h-9 px-3 mt-1 bg-white border border-gray-300 rounded-lg font-medium focus:ring-2 focus:ring-[#D4A017] outline-none text-sm"
+                    />
+                </div>
+
+                <div className="flex justify-end items-center gap-2 pt-2">
+                    <button
+                        onClick={onClose}
+                        className="px-4 py-1.5 bg-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-300 transition-colors text-sm"
+                    >
+                        Cancelar
+                    </button>
+                    <button 
+                        onClick={handleSearch} 
+                        className="h-9 px-4 bg-blue-600 text-white rounded-lg font-bold flex items-center justify-center hover:bg-blue-700 transition-all shrink-0 gap-2"
+                    >
+                        <Search className="w-4 h-4" />
+                        <span>Buscar</span>
+                    </button>
+                </div>
             </div>
           )}
 
