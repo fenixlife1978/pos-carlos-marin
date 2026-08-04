@@ -59,23 +59,6 @@ function extractDocType(cedula: string): string {
   return match ? match[1].replace('-', '').trim() + '-' : 'V-';
 }
 
-function findCustomerByCedula(customers: any[], cedula: string): any | null {
-  const raw = getRawCedula(cedula);
-  return customers.find(c => getRawCedula(c.cedula) === raw) || null;
-}
-
-function findDebtsByCedula(deudas: any[], cedula: string): any[] {
-  const raw = getRawCedula(cedula);
-  return deudas.filter(d => {
-    if (!d.cliente) return false;
-    const match = d.cliente.match(/^(.*?)\s*\[(.*?)\]$/);
-    if (match) {
-      return getRawCedula(match[2]) === raw;
-    }
-    return false;
-  });
-}
-
 // ============================================================
 // COMPONENTE PRINCIPAL
 // ============================================================
@@ -85,10 +68,8 @@ interface CreditModalProps {
   onClose: () => void;
   onConfirm: (customer: Customer, amount: number) => void;
   totalAmount: number;
-  // ===== NUEVAS PROPS (opcionales para compatibilidad) =====
   clients?: Customer[];
   debts?: Debt[];
-  initialClientName?: string;
 }
 
 export function CreditModal({ 
@@ -98,7 +79,6 @@ export function CreditModal({
   totalAmount,
   clients: propClients,
   debts: propDebts,
-  initialClientName 
 }: CreditModalProps) {
   const { toast } = useToast();
   const [store, setStore] = useState<any>(Store.get());
@@ -112,7 +92,8 @@ export function CreditModal({
   const [newPhone, setNewPhone] = useState('');
   const [newAddress, setNewAddress] = useState('');
 
-  // Refs para navegación con Enter
+  const [nameMatches, setNameMatches] = useState<Customer[]>([]);
+
   const searchInputRef = useRef<HTMLInputElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const docSelectRef = useRef<HTMLSelectElement>(null);
@@ -122,16 +103,8 @@ export function CreditModal({
   const createButtonRef = useRef<HTMLButtonElement>(null);
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
 
-  // ===== OBTENER CLIENTES Y DEUDAS DE PROPS O STORE =====
-  const getClients = (): Customer[] => {
-    if (propClients) return propClients;
-    return store.clientes || [];
-  };
-
-  const getDebts = (): Debt[] => {
-    if (propDebts) return propDebts;
-    return store.cxc || [];
-  };
+  const getClients = (): Customer[] => propClients || store.clientes || [];
+  const getDebts = (): Debt[] => propDebts || store.cxc || [];
 
   useEffect(() => {
     const unsubscribe = Store.subscribe(setStore);
@@ -144,6 +117,7 @@ export function CreditModal({
       setDocType('V-');
       setDocNumber('');
       setSearchName('');
+      setNameMatches([]);
       setFoundCustomer(null);
       setNewName('');
       setNewPhone('');
@@ -152,7 +126,6 @@ export function CreditModal({
     }
   }, [isOpen]);
 
-  // Enfocar el botón de confirmar cuando se encuentra un cliente
   useEffect(() => {
     if (view === 'found' && confirmButtonRef.current) {
       setTimeout(() => confirmButtonRef.current?.focus(), 100);
@@ -163,7 +136,10 @@ export function CreditModal({
     const clean = value.replace(/[^0-9]/g, '');
     const formatted = normalizeCedula(clean, docType);
     setDocNumber(formatted);
-    if (formatted) setSearchName('');
+    if (formatted) {
+        setSearchName('');
+        setNameMatches([]);
+    }
   };
 
   const handleDocTypeChange = (type: string) => {
@@ -175,22 +151,12 @@ export function CreditModal({
     }
   };
 
-  // ============================================================
-  // FUNCIÓN DE BÚSQUEDA CORREGIDA (usa props)
-  // ============================================================
   const findCustomer = (fullDoc: string): Customer | null => {
     const raw = getRawCedula(fullDoc);
     const customers = getClients();
     const debts = getDebts();
+    let customer: Customer | null = customers.find(c => getRawCedula(c.cedula) === raw) ? { ...customers.find(c => getRawCedula(c.cedula) === raw)! } : null;
 
-    // Buscar en clientes
-    let customer: Customer | null = null;
-    const found = customers.find(c => getRawCedula(c.cedula) === raw);
-    if (found) {
-      customer = { ...found };
-    }
-
-    // Buscar en deudas para obtener saldo
     const deudasCliente = debts.filter(d => {
       if (!d.cliente) return false;
       const match = d.cliente.match(/^(.*?)\s*\[(.*?)\]$/);
@@ -198,30 +164,33 @@ export function CreditModal({
     });
     const totalDeuda = deudasCliente.reduce((sum, d) => sum + (d.saldoUSD || 0), 0);
 
-    // Si no existe en clientes pero tiene deudas, crear un cliente virtual
-    if (!customer) {
-      if (deudasCliente.length > 0) {
-        const primera = deudasCliente[0];
-        const match = primera.cliente?.match(/^(.*?)\s*\[(.*?)\]$/);
-        if (match) {
-          const tipo = extractDocType(fullDoc);
-          const cedulaNormalizada = normalizeCedula(match[2], tipo);
-          customer = {
-            id: `CUS-${Date.now()}`,
-            name: match[1].trim(),
-            cedula: cedulaNormalizada,
-            address: 'Sin dirección',
-            phone: 'Sin teléfono',
-            debt: totalDeuda
-          };
-        }
+    if (!customer && deudasCliente.length > 0) {
+      const primera = deudasCliente[0];
+      const match = primera.cliente?.match(/^(.*?)\s*\[(.*?)\]$/);
+      if (match) {
+        const tipo = extractDocType(fullDoc);
+        const cedulaNormalizada = normalizeCedula(match[2], tipo);
+        customer = {
+          id: `CUS-${Date.now()}`,
+          name: match[1].trim(),
+          cedula: cedulaNormalizada,
+          address: 'Sin dirección',
+          phone: 'Sin teléfono',
+          debt: totalDeuda
+        };
       }
-    } else {
-      // Actualizar deuda del cliente existente
+    } else if (customer) {
       customer.debt = totalDeuda;
     }
-
     return customer;
+  };
+  
+  const handleSelectMatch = (customer: Customer) => {
+    const fullCustomerProfile = findCustomer(customer.cedula);
+    setFoundCustomer(fullCustomerProfile);
+    setView('found');
+    setNameMatches([]);
+    setSearchName('');
   };
 
   const handleSearch = () => {
@@ -229,52 +198,46 @@ export function CreditModal({
     const trimmedName = searchName.trim();
 
     if (!trimmedDoc && !trimmedName) {
-        toast({ title: "Criterio Requerido", description: "Por favor, ingrese un documento o un nombre.", variant: "destructive" });
-        return;
+      toast({ title: "Criterio Requerido", description: "Por favor, ingrese un documento o un nombre.", variant: "destructive" });
+      return;
     }
 
-    let customer: Customer | null = null;
-
     if (trimmedDoc) {
-        const cleanDoc = trimmedDoc.replace(/\./g, '');
-        const fullDoc = `${docType}${cleanDoc}`;
-        customer = findCustomer(fullDoc);
-        if (customer) {
-            setFoundCustomer(customer);
-            setView('found');
-        } else {
-            setFoundCustomer(null);
-            setView('create');
-        }
+      const cleanDoc = trimmedDoc.replace(/\./g, '');
+      const fullDoc = `${docType}${cleanDoc}`;
+      const customer = findCustomer(fullDoc);
+      if (customer) {
+        setFoundCustomer(customer);
+        setView('found');
+      } else {
+        setFoundCustomer(null);
+        setView('create');
+      }
     } else if (trimmedName) {
-        const customers = getClients();
-        const nameToSearch = trimmedName.toLowerCase();
-        const foundByName = customers.find(c => c.name.toLowerCase().includes(nameToSearch));
+      const customers = getClients();
+      const nameToSearch = trimmedName.toLowerCase();
+      const foundCustomers = customers.filter(c => c.name.toLowerCase().includes(nameToSearch));
 
-        if (foundByName && foundByName.cedula) {
-            customer = findCustomer(foundByName.cedula);
-            setFoundCustomer(customer);
-            setView('found');
-        } else {
-            toast({ 
-                title: "Cliente no encontrado", 
-                description: `No se encontró un cliente que coincida con "${trimmedName}". Intente con el documento de identidad.`,
-                variant: "destructive" 
-            });
-            return;
-        }
+      if (foundCustomers.length === 1) {
+        handleSelectMatch(foundCustomers[0]);
+      } else if (foundCustomers.length > 1) {
+        setNameMatches(foundCustomers);
+      } else {
+        toast({ 
+          title: "Cliente no encontrado", 
+          description: `No se encontró un cliente que coincida con "${trimmedName}". Intente con el documento de identidad.`,
+          variant: "destructive" 
+        });
+        setNameMatches([]);
+      }
     }
   };
 
-
   const handleConfirmCharge = () => {
     if (foundCustomer) {
-      // Verificar si el cliente ya existe en la base de datos (para evitar duplicados)
       const customers = getClients();
       const exists = customers.some(c => getRawCedula(c.cedula) === getRawCedula(foundCustomer.cedula));
       
-      // Si no existe, se crea automáticamente (pero ya debería existir porque lo encontramos)
-      // Sin embargo, si se encontró solo por deudas, puede que no esté en clientes, entonces lo creamos.
       if (!exists) {
         const cedulaNormalizada = normalizeCedula(foundCustomer.cedula, extractDocType(foundCustomer.cedula));
         const newCustomer: Customer = {
@@ -286,9 +249,7 @@ export function CreditModal({
           debt: foundCustomer.debt || 0
         };
         const updatedCustomers = [...customers, newCustomer];
-        // Actualizar store local
         Store.set({ ...store, clientes: updatedCustomers });
-        // Actualizar estado local para reflejar el nuevo cliente
         setFoundCustomer({ ...newCustomer });
         onConfirm(newCustomer, totalAmount);
       } else {
@@ -310,8 +271,6 @@ export function CreditModal({
 
     const customers = getClients();
     const debts = getDebts();
-
-    // Verificar si ya existe (en clientes o en deudas)
     const exists = customers.some(c => getRawCedula(c.cedula) === raw) ||
                    debts.some(d => {
                      if (!d.cliente) return false;
@@ -355,25 +314,15 @@ export function CreditModal({
     setTimeout(() => searchInputRef.current?.focus(), 100);
   };
 
-  // ===== MANEJADORES DE TECLADO PARA NAVEGACIÓN POR ENTER =====
   const handleKeyDownCreate = (e: React.KeyboardEvent<HTMLInputElement>, field: string) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       switch (field) {
-        case 'name':
-          docInputRef.current?.focus();
-          break;
-        case 'doc':
-          phoneInputRef.current?.focus();
-          break;
-        case 'phone':
-          addressInputRef.current?.focus();
-          break;
-        case 'address':
-          createButtonRef.current?.click();
-          break;
-        default:
-          break;
+        case 'name': docInputRef.current?.focus(); break;
+        case 'doc': phoneInputRef.current?.focus(); break;
+        case 'phone': addressInputRef.current?.focus(); break;
+        case 'address': createButtonRef.current?.click(); break;
+        default: break;
       }
     }
   };
@@ -383,7 +332,6 @@ export function CreditModal({
   return (
     <div className="fixed inset-0 bg-black/60 flex justify-center items-center z-50 p-4 animate-in fade-in-50">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md transform transition-all duration-300 overflow-hidden max-h-[95vh] flex flex-col">
-        {/* HEADER */}
         <div className="px-4 py-3 border-b border-gray-200 flex justify-between items-center bg-black shrink-0">
           <div className="flex items-center gap-2">
             <CreditCard className="w-5 h-5 text-[#D4A017]" />
@@ -394,17 +342,12 @@ export function CreditModal({
           </button>
         </div>
 
-        {/* CUERPO DEL MODAL - SCROLLABLE */}
         <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-white">
-          {/* ===== MONTO A DEBER - FONDO NEGRO ===== */}
           <div className="bg-black rounded-xl p-3 text-center shrink-0">
             <p className="text-[10px] font-bold text-white/60 uppercase">Monto a deber</p>
             <p className="text-2xl font-black text-[#D4A017]">{formatUsd(totalAmount)}</p>
           </div>
 
-          {/* ============================================================ */}
-          {/* PASO 1: BÚSQUEDA */}
-          {/* ============================================================ */}
           {view === 'search' && (
             <div className="space-y-3">
                 <div>
@@ -445,12 +388,31 @@ export function CreditModal({
                         onChange={(e) => {
                             setSearchName(e.target.value);
                             if (e.target.value) setDocNumber('');
+                            else setNameMatches([]);
                         }}
                         onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                         placeholder="Ej: Juan Perez"
                         className="w-full h-9 px-3 mt-1 bg-white border border-gray-300 rounded-lg font-medium focus:ring-2 focus:ring-[#D4A017] outline-none text-sm"
                     />
                 </div>
+
+                {nameMatches.length > 0 && (
+                    <div className="space-y-2 pt-3 mt-3 border-t border-gray-200 animate-in fade-in duration-300">
+                        <p className="text-xs font-bold text-gray-600">Múltiples coincidencias. Por favor, seleccione un cliente:</p>
+                        <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
+                            {nameMatches.map(match => (
+                                <button 
+                                    key={match.id} 
+                                    onClick={() => handleSelectMatch(match)}
+                                    className="w-full text-left p-2.5 bg-gray-50 hover:bg-blue-100 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400 transition-all duration-150"
+                                >
+                                    <p className="font-bold text-sm text-gray-800 uppercase">{match.name}</p>
+                                    <p className="text-xs text-gray-500 font-mono">{match.cedula}</p>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
 
                 <div className="flex justify-end items-center gap-2 pt-2">
                     <button
@@ -470,22 +432,19 @@ export function CreditModal({
             </div>
           )}
 
-          {/* ============================================================ */}
-          {/* PASO 2: CLIENTE ENCONTRADO - CON ENTER ACTIVA EL BOTÓN */}
-          {/* ============================================================ */}
           {view === 'found' && foundCustomer && (
-            <div className="space-y-3">
+            <div className="space-y-3 animate-in zoom-in-95 duration-300">
               <div className="bg-gray-50 rounded-xl p-3 text-center border border-gray-200">
                 <p className="font-bold text-base text-gray-800">{foundCustomer.name}</p>
                 <p className="text-sm text-gray-500 mt-1">
                   SALDO ACTUAL: <span className="font-bold text-red-600">{formatUsd(foundCustomer.debt || 0)}</span>
-                  {foundCustomer.debt === 0 && (
+                  {(foundCustomer.debt || 0) === 0 && (
                     <span className="ml-2 text-xs text-green-600 font-bold">(AL DÍA)</span>
                   )}
                 </p>
                 {foundCustomer.debt !== undefined && (
                   <p className="text-xs text-gray-400 mt-0.5">
-                    Equiv. Bs: <span className="font-bold">{(foundCustomer.debt * (store.tasa || 1)).toFixed(2)}</span>
+                    Equiv. Bs: <span className="font-bold">{((foundCustomer.debt || 0) * (store.tasa || 1)).toFixed(2)}</span>
                   </p>
                 )}
               </div>
@@ -501,11 +460,8 @@ export function CreditModal({
             </div>
           )}
 
-          {/* ============================================================ */}
-          {/* PASO 3: CLIENTE NO ENCONTRADO - PREGUNTAR SI CREAR */}
-          {/* ============================================================ */}
           {view === 'create' && !foundCustomer && (
-            <div className="space-y-3">
+            <div className="space-y-3 animate-in zoom-in-95 duration-300">
               <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-3 text-center">
                 <AlertCircle className="w-8 h-8 text-yellow-500 mx-auto mb-1" />
                 <p className="font-bold text-yellow-700 text-sm">Cliente no encontrado</p>
@@ -518,10 +474,10 @@ export function CreditModal({
                   onClick={handleBackToSearch}
                   className="flex-1 h-9 bg-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-300 transition-colors text-sm"
                 >
-                  No
+                  Volver a Buscar
                 </button>
                 <button
-                  onClick={() => setFoundCustomer(null)}
+                  onClick={() => setView('create')} // Cambiar la vista a 'create' para mostrar el formulario
                   className="flex-1 h-9 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition-colors flex items-center justify-center gap-1 text-sm"
                 >
                   <UserPlus className="w-4 h-4" />
@@ -530,13 +486,10 @@ export function CreditModal({
               </div>
             </div>
           )}
-
-          {/* ============================================================ */}
-          {/* PASO 4: CREAR NUEVO CLIENTE */}
-          {/* ============================================================ */}
-          {view === 'create' && foundCustomer === null && (
-            <div className="space-y-2">
-              <p className="text-center text-sm font-bold text-gray-700">Nuevo Cliente</p>
+          
+          {view === 'create' && (
+            <div className="space-y-2 animate-in fade-in duration-300">
+              <p className="text-center text-sm font-bold text-gray-700 pt-2">Nuevo Cliente</p>
               
               <div>
                 <label className="text-[10px] font-bold text-gray-500 block mb-0.5">NOMBRE COMPLETO</label>
@@ -609,7 +562,7 @@ export function CreditModal({
                   onClick={handleBackToSearch} 
                   className="font-bold text-gray-600 hover:underline text-xs text-center"
                 >
-                  VOLVER A LA LISTA
+                  VOLVER A LA BÚSQUEDA
                 </button>
               </div>
             </div>
