@@ -48,6 +48,7 @@ import {
 } from '@/lib/pdf-generator';
 import { ProductFormModal } from '@/components/inventory/ProductFormModal';
 import { toast } from '@/hooks/use-toast';
+import { asegurarStockInicial } from '@/lib/kardex-backfill';
 
 // ============================================================
 // HELPERS DE FORMATO PARA ML (CORREGIDOS)
@@ -992,7 +993,22 @@ function ReporteConsumo({ state }: { state: AppState }) {
 
 function ReporteKardex({ state, selectedId, onSelect }: { state: AppState, selectedId: string | null, onSelect: (id: string) => void }) {
   const [search, setSearch] = useState('');
+  const [backfillBusy, setBackfillBusy] = useState(false);
   const selectedProd = selectedId ? state.productos.find(p => p.id === selectedId) : null;
+
+  const reconstruirStockInicial = async () => {
+    if (backfillBusy) return;
+    setBackfillBusy(true);
+    try {
+      const n = await asegurarStockInicial();
+      toast({ title: "Stock Inicial Reconstruido", description: n > 0 ? `${n} movimiento(s) de Stock Inicial creados para el kardex.` : "Todos los productos ya tienen su Stock Inicial." });
+    } catch (e) {
+      console.error(e);
+      toast({ variant: "destructive", title: "Error", description: "No se pudo reconstruir el Stock Inicial." });
+    } finally {
+      setBackfillBusy(false);
+    }
+  };
   
   const movs = useMemo(() => {
     if (!selectedId || !state.movimientos) return [];
@@ -1035,7 +1051,12 @@ function ReporteKardex({ state, selectedId, onSelect }: { state: AppState, selec
                <ShieldAlert className="w-5 h-5 text-brand-gold" />
                <h3 className="font-black text-xs uppercase tracking-widest text-brand-gold">{selectedProd.nombre}</h3>
             </div>
-            <button className="btn btn-secondary h-8 px-4 font-black uppercase text-[9px]" onClick={() => exportarPDFKardex(selectedProd, movs, state.empresa, state.terminales)}>Exportar Kardex</button>
+            <div className="flex items-center gap-2">
+              <button className="btn btn-secondary h-8 px-4 font-black uppercase text-[9px]" onClick={reconstruirStockInicial} disabled={backfillBusy}>
+                {backfillBusy ? 'Reconstruyendo...' : 'Reconstruir Stock Inicial'}
+              </button>
+              <button className="btn btn-secondary h-8 px-4 font-black uppercase text-[9px]" onClick={() => exportarPDFKardex(selectedProd, movs, state.empresa, state.terminales)}>Exportar Kardex</button>
+            </div>
           </div>
           <div className="table-wrap">
              <Table>

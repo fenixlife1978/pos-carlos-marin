@@ -13,6 +13,7 @@ import {
   getDocs, 
   updateDoc, 
   deleteDoc,
+  deleteField,
   CollectionReference,
   Query,
   DocumentData
@@ -21,6 +22,30 @@ import {
 const STORAGE_KEY = 'posven_pro_config_cache';
 const CONFIG_COLLECTION = 'config';
 const CONFIG_DOC = 'global';
+
+// 🔑 SOLO estas claves de CONFIGURACIÓN se persisten en config/global.
+// Los datos transaccionales (ventas, movimientos, cxc, cxp, productos,
+// clientes, compras, etc.) viven EXCLUSIVAMENTE en colecciones raíz.
+const CONFIG_KEYS = [
+  'tasa', 'comisionEfectivo', 'pinDevolucion', 'isInitialized',
+  'empresa',
+  'departamentos', 'categorias', 'marcas', 'presentaciones', 'proveedores',
+  'ultimoZ', 'proximoRecibo', 'proximaDevolucion', 'proximaAnulacion',
+  'acumuladoHistorico', 'fechaUltimoZ',
+  'fondoCajaHoyUSD', 'fondoCajaHoyBS',
+  'isCashOpen',
+  'config',
+  'productCategories', 'productUnits', 'productColors', 'productSizes',
+  'brands', 'groups', 'subgroups', 'lines', 'suppliers',
+  'marcasString', 'proveedoresString'
+];
+
+// 🔑 Claves que NUNCA deben vivir en config/global (auto-limpiadas si quedaron ahí).
+const TRANSACTIONAL_KEYS = [
+  'productos', 'ventas', 'cxc', 'cxp', 'clientes', 'devoluciones',
+  'anulaciones', 'movimientos', 'libroDiario', 'terminales', 'reportesZ',
+  'cashData', 'cashHistory', 'user', 'isAuthenticated'
+];
 
 export const initialState: AppState = {
   user: null,
@@ -99,6 +124,7 @@ export const Store = {
     return onSnapshot(docRef, (snapshot) => {
       if (snapshot.exists()) {
         const val = snapshot.data();
+
         // Solo mezclamos la configuración, no los arrays de datos
         const configData = {
           tasa: val.tasa ?? initialState.tasa,
@@ -120,8 +146,6 @@ export const Store = {
           fondoCajaHoyUSD: val.fondoCajaHoyUSD ?? 0,
           fondoCajaHoyBS: val.fondoCajaHoyBS ?? 0,
           isCashOpen: val.isCashOpen ?? false,
-          cashData: val.cashData ?? null,
-          cashHistory: val.cashHistory ?? [],
           config: val.config ?? initialState.config,
           productCategories: val.productCategories ?? initialState.productCategories,
           productUnits: val.productUnits ?? initialState.productUnits,
@@ -161,8 +185,6 @@ export const Store = {
           fondoCajaHoyUSD: 0,
           fondoCajaHoyBS: 0,
           isCashOpen: false,
-          cashData: null,
-          cashHistory: [],
           config: initialState.config,
           productCategories: initialState.productCategories,
           productUnits: initialState.productUnits,
@@ -200,10 +222,13 @@ export const Store = {
 
   async set(state: Partial<AppState>) {
     if (typeof window === 'undefined') return;
+    if (!state || typeof state !== 'object' || Array.isArray(state)) return;
     
-    // 🔑 FILTRAR CAMPOS UNDEFINED para evitar errores en Firestore
+    // 🔑 FILTRAR CAMPOS UNDEFINED Y SOLO PERMITIR CLAVES DE CONFIGURACIÓN.
+    // Así config/global jamás recibe datos transaccionales (ventas, movimientos,
+    // cxc, productos, etc.) aunque los módulos pasen el estado completo.
     const filteredState = Object.fromEntries(
-      Object.entries(state).filter(([_, v]) => v !== undefined)
+      Object.entries(state).filter(([k, v]) => v !== undefined && CONFIG_KEYS.includes(k))
     );
     
     // 🔑 Merge con initialState (siempre valores por defecto)
@@ -227,8 +252,6 @@ export const Store = {
       fondoCajaHoyUSD: 0,
       fondoCajaHoyBS: 0,
       isCashOpen: false,
-      cashData: null,
-      cashHistory: [],
       config: initialState.config,
       productCategories: initialState.productCategories,
       productUnits: initialState.productUnits,
@@ -375,4 +398,28 @@ export const Utils = {
     };
     return map[m] || m;
   }
+};
+
+// ============================================================
+// LIMPIEZA MANUAL DE config/global
+// ============================================================
+// Elimina ÚNICAMENTE los arrays transaccionales heredados de
+// config/global (ventas, movimientos, cxc, productos, etc.),
+// conservando los campos de configuración. Los datos transaccionales
+// viven en sus colecciones raíz; se debe ejecutar tras verificar/backup.
+export const limpiarConfigGlobal = async (): Promise<number> => {
+  if (!db) return 0;
+  const docRef = doc(db, CONFIG_COLLECTION, CONFIG_DOC);
+  const snap = await getDocs(collection(db, CONFIG_COLLECTION));
+  const docSnap = snap.docs.find(d => d.id === CONFIG_DOC);
+  if (!docSnap) return 0;
+
+  const val = docSnap.data();
+  const presentes = TRANSACTIONAL_KEYS.filter(k => val[k] !== undefined);
+  if (presentes.length === 0) return 0;
+
+  const delObj: Record<string, any> = {};
+  presentes.forEach(k => delObj[k] = deleteField());
+  await updateDoc(docRef, delObj);
+  return presentes.length;
 };

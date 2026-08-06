@@ -11,6 +11,17 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  serverExternalPackages: [
+    '@firebase/app',
+    '@firebase/firestore',
+    '@firebase/auth',
+    '@firebase/database',
+    '@grpc/grpc-js',
+    '@grpc/proto-loader',
+    'protobufjs',
+    'usb',
+    'electron',
+  ],
   images: {
     unoptimized: true,
     remotePatterns: [

@@ -16,7 +16,7 @@ import {
   Trash,
   Boxes
 } from 'lucide-react';
-import { Store, Utils } from '@/lib/db-store';
+import { Store, Utils, Collections } from '@/lib/db-store';
 import { AppState, Product, Movimiento, PaymentMethod, KitItem, Supplier, LibroDiarioEntry, Debt } from '@/lib/types';
 import { toast } from '@/hooks/use-toast';
 import { ProductFormModal } from '@/components/inventory/ProductFormModal';
@@ -162,7 +162,7 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
     setLoteTemporal(loteTemporal.filter((_, i) => i !== idx));
   };
 
-  const handleProcessPurchase = () => {
+  const handleProcessPurchase = async () => {
     if (!proveedor) {
       toast({ title: "Proveedor requerido", description: "Seleccione un proveedor", variant: "destructive" });
       return;
@@ -260,6 +260,38 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
       nuevasCxP.push(nuevaDeuda);
     }
 
+    // 🔑 PERSISTIR EN COLECCIONES RAÍZ (ya NO se guarda en config/global)
+    for (const p of nuevosProductos) {
+      const comprado = loteTemporal.some(i => i.productoId === p.id);
+      if (comprado) await Collections.set('productos', p.id, p);
+    }
+    for (const mov of nuevosMovimientos) {
+      await Collections.set('movimientos', mov.id, mov);
+    }
+    for (const asiento of nuevosAsientosDiario) {
+      await Collections.set('libroDiario', asiento.id, asiento);
+    }
+    if (saldoPendienteUSD > 0.0001) {
+      const nuevaDeuda = nuevasCxP[nuevasCxP.length - 1];
+      await Collections.set('cxp', nuevaDeuda.id, nuevaDeuda);
+    }
+    const compraId = 'COMP-' + Store.uid().slice(0, 8).toUpperCase();
+    await Collections.set('compras', compraId, {
+      id: compraId,
+      numeroFactura,
+      proveedor,
+      fecha,
+      fechaVencimiento,
+      condicion,
+      items: loteTemporal,
+      totalUSD,
+      pagadoUSD: pMontoPagadoUSD,
+      saldoUSD: saldoPendienteUSD,
+      tasa: tasaActual,
+      terminalId: 'ADMIN',
+      createdAt: ahoraStr
+    });
+
     updateState({
       productos: nuevosProductos,
       movimientos: [...state.movimientos, ...nuevosMovimientos],
@@ -281,7 +313,7 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
   };
 
   // Handler para guardar producto desde el modal
-  const handleSaveProduct = (productData: any) => {
+  const handleSaveProduct = async (productData: any) => {
     const newProduct = {
       id: Store.uid(),
       ...productData,
@@ -289,6 +321,8 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
       createdAt: Utils.ahora(),
       updatedAt: Utils.ahora()
     };
+    // 🔑 Persistir en colección raíz (ya NO en config/global)
+    await Collections.set('productos', newProduct.id, newProduct);
     updateState({
       productos: [...state.productos, newProduct]
     });

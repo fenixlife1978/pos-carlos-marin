@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { AppState } from '@/lib/types';
 import { Save, AlertTriangle, RefreshCw } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
-import { initialState, Store } from '@/lib/db-store';
+import { initialState, Store, limpiarConfigGlobal } from '@/lib/db-store';
 import { db, auth, rtdb } from '@/lib/firebase';
 import { collection, getDocs, deleteDoc, doc, setDoc, writeBatch, query, limit } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
@@ -234,6 +234,39 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
     }
   };
 
+  const [isCleaningConfig, setIsCleaningConfig] = useState(false);
+
+  const limpiarConfigLocal = async () => {
+    const confirmMsg =
+      '¿Seguro que deseas limpiar los datos transaccionales guardados en config/global?\n\n' +
+      'Se eliminarán SOLO los arrays heredados (ventas, movimientos, cxc, cxp, productos, etc.) dentro del documento config/global.\n\n' +
+      '✅ Los datos de las colecciones raíz (Ventas, productos, movimientos, etc.) NO se tocan.\n\n' +
+      '⚠️ Asegúrate de haber verificado/exportado tu información antes de continuar.';
+
+    if (!confirm(confirmMsg)) return;
+
+    setIsCleaningConfig(true);
+    try {
+      const count = await limpiarConfigGlobal();
+      toast({
+        title: count > 0 ? '✅ config/global limpiado' : 'ℹ️ Nada que limpiar',
+        description: count > 0
+          ? `Se eliminaron ${count} campos transaccionales de config/global.`
+          : 'config/global ya solo contiene configuración.',
+        duration: 3000
+      });
+    } catch (error) {
+      console.warn('⚠️ Error al limpiar config/global:', error);
+      toast({
+        title: '❌ Error',
+        description: 'No se pudo limpiar config/global.',
+        duration: 3000
+      });
+    } finally {
+      setIsCleaningConfig(false);
+    }
+  };
+
   return (
     <div className="max-w-2xl space-y-6 animate-in fade-in duration-300 pb-20">
       {/* ===== TASA DE CAMBIO ===== */}
@@ -375,14 +408,24 @@ export default function ConfigModule({ state, updateState }: { state: AppState, 
           <p className="text-xs text-ink font-bold mb-5 uppercase">
             ESTA ACCIÓN ELIMINARÁ TODOS LOS DATOS DEL SISTEMA DE MANERA PERMANENTE.
           </p>
-          <button 
-            className="btn btn-danger h-12 px-8 font-black uppercase text-xs shadow-xl flex items-center gap-2" 
-            onClick={formatearSistema}
-            disabled={isFormatting}
-          >
-            {isFormatting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <AlertTriangle className="w-4 h-4" />}
-            {isFormatting ? 'FORMATEANDO...' : 'Limpiar Todo el Sistema'}
-          </button>
+          <div className="flex flex-wrap gap-3">
+            <button 
+              className="btn btn-danger h-12 px-8 font-black uppercase text-xs shadow-xl flex items-center gap-2" 
+              onClick={formatearSistema}
+              disabled={isFormatting}
+            >
+              {isFormatting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <AlertTriangle className="w-4 h-4" />}
+              {isFormatting ? 'FORMATEANDO...' : 'Limpiar Todo el Sistema'}
+            </button>
+            <button 
+              className="btn h-12 px-6 font-black uppercase text-xs shadow-md flex items-center gap-2 border border-status-danger/40 text-status-danger bg-white hover:bg-status-danger-soft" 
+              onClick={limpiarConfigLocal}
+              disabled={isCleaningConfig}
+            >
+              <RefreshCw className={`w-4 h-4 ${isCleaningConfig ? 'animate-spin' : ''}`} />
+              {isCleaningConfig ? 'LIMPIANDO...' : 'Limpiar config/global (seguro)'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

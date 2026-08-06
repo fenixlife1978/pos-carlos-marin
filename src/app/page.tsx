@@ -58,6 +58,7 @@ import { cacheProductos, getProductosFromCache, clearProductosCache } from '@/li
 import { getQueue, processQueue } from '@/lib/offline-queue';
 import { updateStockRTDB, incrementarReciboRTDB } from '@/lib/rtdb-utils';
 import { toast } from '@/hooks/use-toast';
+import { asegurarStockInicial } from '@/lib/kardex-backfill';
 
 export default function LicoreriaPOS() {
   const router = useRouter();
@@ -158,7 +159,10 @@ export default function LicoreriaPOS() {
       });
       unsubscribes.current.push(unsubCxp);
 
-      const unsubMov = Collections.subscribeWhere('movimientos', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
+      // 🔑 MOVIMIENTOS: se cargan TODOS (sin filtrar por terminal) para que el
+      // kardex recorra todos los movimientos desde el Stock Inicial (terminalId
+      // 'SISTEMA' en los iniciales, 'ADMIN' en compras, etc.)
+      const unsubMov = Collections.subscribeAll('movimientos', (list) => {
         setState(prev => ({ ...prev, movimientos: list }) as AppState);
       });
       unsubscribes.current.push(unsubMov);
@@ -227,6 +231,17 @@ export default function LicoreriaPOS() {
         const terminalId = terminal?.id || 'GLOBAL';
 
         setupSubscriptions(terminalId);
+
+        // 🔑 KARDEX: asegurar el movimiento de Stock Inicial de todos los productos.
+        // Backfill idempotente, una sola vez por dispositivo.
+        if (typeof localStorage !== 'undefined' && !localStorage.getItem('posven_stock_inicial_done')) {
+          asegurarStockInicial()
+            .then(n => {
+              if (n > 0) console.log(`📦 Kardex: ${n} movimientos de Stock Inicial reconstruidos`);
+              localStorage.setItem('posven_stock_inicial_done', 'true');
+            })
+            .catch(e => console.error('Backfill Stock Inicial:', e));
+        }
 
         setUser(currentUser);
         setUserRole(data.rol);
