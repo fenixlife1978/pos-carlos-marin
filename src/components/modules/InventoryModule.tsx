@@ -26,7 +26,8 @@ import {
   LayoutGrid,
   Monitor,
   Eye,
-  ShieldAlert
+  ShieldAlert,
+  RefreshCw
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -87,6 +88,28 @@ export function InventoryModule({ state, updateState }: { state: AppState, updat
   
   const [showAjuste, setShowAjuste] = useState<string | null>(null);
   const [showProducto, setShowProducto] = useState<string | null | 'nuevo'>(null);
+  const [migrandoStock, setMigrandoStock] = useState(false);
+
+  // 🔑 Migrar/Reconstruir Stock Inicial de todos los productos (visible en la barra de herramientas)
+  const migrarStockInicial = async () => {
+    if (migrandoStock) return;
+    setMigrandoStock(true);
+    try {
+      const n = await asegurarStockInicial();
+      toast({
+        title: n > 0 ? `✅ ${n} Stock(s) Inicial creados` : 'ℹ️ Sin cambios',
+        description: n > 0
+          ? 'Se crearon los movimientos de Stock Inicial. Abre el Kardex Fiscal de un producto para verlos.'
+          : 'Todos los productos con stock ya tienen su Stock Inicial en el kardex.',
+        duration: 4000
+      });
+    } catch (e) {
+      console.error('Migración Stock Inicial:', e);
+      toast({ variant: 'destructive', title: '❌ Error', description: 'No se pudo migrar el Stock Inicial. Revisa tu conexión.' });
+    } finally {
+      setMigrandoStock(false);
+    }
+  };
 
   // ✅ CORRECCIÓN: Limpiar departamentos y categorías para evitar duplicados
   const cleanDepartamentos = useMemo(() => {
@@ -207,6 +230,10 @@ export function InventoryModule({ state, updateState }: { state: AppState, updat
             <div className="flex gap-2 w-full md:w-auto">
               <Button variant="secondary" className="flex-1 md:flex-none h-11 font-black uppercase text-[10px]" onClick={() => generarPDFInventarioSimple(prods, state.empresa)}>
                 <FileText className="w-4 h-4" /> PDF Simple
+              </Button>
+              <Button variant="secondary" className="flex-1 md:flex-none h-11 font-black uppercase text-[10px]" onClick={migrarStockInicial} disabled={migrandoStock}>
+                {migrandoStock ? <RefreshCw className="w-4 h-4 animate-spin" /> : <History className="w-4 h-4" />}
+                {migrandoStock ? 'Migrando...' : 'Migrar Stock Inicial'}
               </Button>
               <Button className="flex-1 md:flex-none h-11 bg-brand-gold hover:bg-brand-gold-deep text-ink font-black uppercase text-[10px] shadow-lg" onClick={() => setShowProducto('nuevo')}>
                 <Plus className="w-4 h-4" /> Nuevo Ítem

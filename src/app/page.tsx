@@ -233,14 +233,17 @@ export default function LicoreriaPOS() {
         setupSubscriptions(terminalId);
 
         // 🔑 KARDEX: asegurar el movimiento de Stock Inicial de todos los productos.
-        // Backfill idempotente, una sola vez por dispositivo.
-        if (typeof localStorage !== 'undefined' && !localStorage.getItem('posven_stock_inicial_done')) {
-          asegurarStockInicial()
-            .then(n => {
-              if (n > 0) console.log(`📦 Kardex: ${n} movimientos de Stock Inicial reconstruidos`);
-              localStorage.setItem('posven_stock_inicial_done', 'true');
-            })
-            .catch(e => console.error('Backfill Stock Inicial:', e));
+        // Backfill idempotente. Se re-ejecuta cada 24h para cubrir productos nuevos.
+        if (typeof localStorage !== 'undefined') {
+          const lastBackfill = Number(localStorage.getItem('posven_stock_inicial_done') || 0);
+          if (Date.now() - lastBackfill > 24 * 60 * 60 * 1000) {
+            asegurarStockInicial()
+              .then(n => {
+                if (n > 0) console.log(`📦 Kardex: ${n} movimientos de Stock Inicial reconstruidos`);
+                localStorage.setItem('posven_stock_inicial_done', String(Date.now()));
+              })
+              .catch(e => console.error('Backfill Stock Inicial:', e));
+          }
         }
 
         setUser(currentUser);
