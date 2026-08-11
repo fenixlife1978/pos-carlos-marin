@@ -40,6 +40,8 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
 
   // 1. DATOS DE LA FACTURA
   const [proveedor, setProveedor] = useState('');
+  const [proveedorSearch, setProveedorSearch] = useState('');
+  const [proveedorAbierto, setProveedorAbierto] = useState(false);
   const [numeroFactura, setNumeroFactura] = useState('');
   const [fecha, setFecha] = useState(Utils.hoy());
   const [tasaCompra, setTasaCompra] = useState<string | number>(state.tasa || 1);
@@ -60,12 +62,25 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
   // Modal para nuevo producto
   const [showNewProductModal, setShowNewProductModal] = useState(false);
 
-  // Normalización de proveedores para evitar errores de tipo si hay datos antiguos (strings)
+  // Normalización de proveedores para evitar errores de tipo si hay datos antiguos
+  // (pueden ser strings, objetos { nombre } o { name })
   const safeProveedores = useMemo(() => {
-    return (state.proveedores || []).map(p => 
-      typeof p === 'string' ? { id: p, nombre: p, rif: '', contacto: '', direccion: '', telefono: '' } : p
-    );
+    return (state.proveedores || []).map((p: any) => {
+      if (typeof p === 'string') return { id: p, nombre: p, rif: '', contacto: '', direccion: '', telefono: '' };
+      const nombre = p.nombre || p.name || p.supplierName || p.rif || 'PROVEEDOR SIN NOMBRE';
+      return { ...p, id: p.id || nombre, nombre };
+    });
   }, [state.proveedores]);
+
+  // Búsqueda inteligente de proveedores por nombre o RIF
+  const proveedoresFiltrados = useMemo(() => {
+    const q = proveedorSearch.trim().toLowerCase();
+    if (!q) return safeProveedores;
+    return safeProveedores.filter(p =>
+      (p.nombre || '').toLowerCase().includes(q) ||
+      (p.rif || '').toLowerCase().includes(q)
+    );
+  }, [safeProveedores, proveedorSearch]);
 
   // Cálculos de Totales (Usando precisión de 4 decimales)
   const totalUSD = loteTemporal.reduce((acc, item) => acc + item.subtotalUSD, 0);
@@ -305,6 +320,8 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
     });
     
     setProveedor('');
+    setProveedorSearch('');
+    setProveedorAbierto(false);
     setNumeroFactura('');
     setLoteTemporal([]);
     setCondicion('contado');
@@ -353,12 +370,44 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
             <div className="card-body p-6 space-y-4">
               <div className="form-group">
                 <label className="text-ink text-[10px] font-black uppercase block mb-1">Proveedor</label>
-                <select className="form-select h-11 text-xs font-bold" value={proveedor} onChange={e => setProveedor(e.target.value)}>
-                  <option value="">SELECCIONE PROVEEDOR</option>
-                  {safeProveedores.map(p => (
-                    <option key={p.id} value={p.nombre}>{p.nombre?.toUpperCase() || 'S/N'}</option>
-                  ))}
-                </select>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink opacity-30 pointer-events-none" />
+                  <input
+                    className="form-input pl-10 h-11 text-sm font-black text-ink w-full"
+                    placeholder="Buscar proveedor..."
+                    value={proveedorSearch}
+                    onChange={e => { setProveedorSearch(e.target.value); setProveedor(''); setProveedorAbierto(true); }}
+                    onFocus={() => setProveedorAbierto(true)}
+                    onBlur={() => setTimeout(() => setProveedorAbierto(false), 150)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && proveedoresFiltrados.length === 1) {
+                        const p = proveedoresFiltrados[0];
+                        setProveedor(p.nombre); setProveedorSearch(p.nombre); setProveedorAbierto(false);
+                      }
+                    }}
+                  />
+                  {proveedorAbierto && (
+                    <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-white border border-line rounded-lg shadow-2xl max-h-[220px] overflow-y-auto">
+                      {proveedoresFiltrados.length === 0 ? (
+                        <div className="p-4 text-center text-ink font-black uppercase italic text-[10px]">
+                          {proveedorSearch.trim() ? 'Sin proveedores coincidentes' : 'No hay proveedores registrados'}
+                        </div>
+                      ) : proveedoresFiltrados.map(p => (
+                        <button
+                          key={p.id}
+                          onMouseDown={(e) => { e.preventDefault(); setProveedor(p.nombre); setProveedorSearch(p.nombre); setProveedorAbierto(false); }}
+                          className={`w-full text-left px-4 py-3 text-xs font-black uppercase border-b border-line/20 last:border-0 hover:bg-brand-gold/10 transition-colors ${proveedor === p.nombre ? 'bg-brand-gold/10 text-brand-gold-deep border-l-4 border-brand-gold' : 'text-ink'}`}
+                        >
+                          {p.nombre}
+                          <span className="block text-[9px] font-bold opacity-50">{p.rif || 'Sin RIF'}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {proveedor && (
+                  <p className="mt-1 text-[9px] font-black uppercase text-brand-gold-deep">Proveedor: {proveedor}</p>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="form-group">
