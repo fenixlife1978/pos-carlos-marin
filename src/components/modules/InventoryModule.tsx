@@ -48,6 +48,7 @@ import {
 } from '@/lib/pdf-generator';
 import { ProductFormModal } from '@/components/inventory/ProductFormModal';
 import { toast } from '@/hooks/use-toast';
+import { actualizarStockProducto, aplicarDeltaStock, unidadesAMl, stockMLDisponible } from '@/lib/stock-utils';
 
 // ============================================================
 // HELPERS DE FORMATO PARA ML (CORREGIDOS)
@@ -254,11 +255,11 @@ export function InventoryModule({ state, updateState }: { state: AppState, updat
                         </TableCell>
                         <TableCell className="text-center">
                           <span className={`badge ${p.ventaFraccionada 
-                            ? ((p.stockML || 0) / (p.volumenTotalML || 1000) <= (p.stockMinimo || 0) ? 'badge-err' : 'badge-neutral')
+                            ? ((stockMLDisponible(p, state.productos) || 0) / (p.volumenTotalML || 1000) <= (p.stockMinimo || 0) ? 'badge-err' : 'badge-neutral')
                             : (p.stock <= (p.stockMinimo || 0) ? 'badge-err' : 'badge-neutral')
                           } font-black text-xs min-w-[40px]`}>
                             {p.ventaFraccionada 
-                              ? `${((p.stockML || 0) / (p.volumenTotalML || 1000)).toFixed(2)}`
+                              ? `${((stockMLDisponible(p, state.productos) || 0) / (p.volumenTotalML || 1000)).toFixed(2)}`
                               : formatStock(p.stock, p.cantidad)
                             }
                           </span>
@@ -384,16 +385,21 @@ export function InventoryModule({ state, updateState }: { state: AppState, updat
             if (!productoOriginal) return;
 
             const nuevosMovimientos: Movimiento[] = [];
+            let productosActualizados = [...state.productos];
 
             if (productoOriginal.isKit && productoOriginal.kitType === 'stock_componentes' && productoOriginal.kitItems) {
               for (const ki of productoOriginal.kitItems) {
                 const cp = state.productos.find(c => c.id === ki.productoId);
                 if (cp) {
                   const cantidadImpacto = mov.cantidad * ki.cantidad;
+                  const deltaML = unidadesAMl(cp, cantidadImpacto);
                   const stockAntes = cp.stock;
-                  const cpActualizado = { ...cp, stock: cp.stock + cantidadImpacto };
+                  const cpActualizado = aplicarDeltaStock(cp, cantidadImpacto, deltaML);
                   await Collections.set('productos', cp.id, cpActualizado);
                   
+                  // Recalcula en tiempo real el propio kit virtual ajustado y cualquiera que use este componente.
+                  productosActualizados = actualizarStockProducto(productosActualizados, cp.id, cantidadImpacto, deltaML);
+
                   const nuevoMov: Movimiento = {
                     id: Store.uid(),
                     productoId: cp.id,
@@ -421,19 +427,39 @@ export function InventoryModule({ state, updateState }: { state: AppState, updat
                 if (stockTotal > 0) {
                   finalCosto = Utils.round(((stockActual * productoOriginal.costoUSD) + (cantidadNueva * costoNuevo)) / stockTotal);
                 }
-                productoActualizado = { ...productoOriginal, stock: mov.stockDespues, costoUSD: finalCosto };
+                // Aplica el ajuste manteniendo stockML al día.
+                productoActualizado = aplicarDeltaStock(
+                  { ...productoOriginal, costoUSD: finalCosto },
+                  mov.cantidad,
+                  unidadesAMl(productoOriginal, mov.cantidad)
+                );
               } else {
-                productoActualizado = { ...productoOriginal, stock: mov.stockDespues };
+                productoActualizado = aplicarDeltaStock(
+                  productoOriginal,
+                  mov.cantidad,
+                  unidadesAMl(productoOriginal, mov.cantidad)
+                );
               }
               
+              // Recalcula en tiempo real los kits virtuales que usan este producto como componente.
+              productosActualizados = actualizarStockProducto(
+                productosActualizados,
+                productoOriginal.id,
+                mov.cantidad,
+                unidadesAMl(productoOriginal, mov.cantidad)
+              );
+
               await Collections.set('productos', productoActualizado.id, productoActualizado);
               await Collections.set('movimientos', mov.id, mov);
               nuevosMovimientos.push(mov);
             }
 
-            // 🔑 Actualizar estado local con los nuevos movimientos
+            // 🔑 Actualizar estado local con los nuevos movimientos y productos
             if (nuevosMovimientos.length > 0) {
-              updateState({ movimientos: [...state.movimientos, ...nuevosMovimientos] });
+              updateState({
+                movimientos: [...state.movimientos, ...nuevosMovimientos],
+                productos: productosActualizados
+              });
             }
 
             setShowAjuste(null);
@@ -525,7 +551,7 @@ function ReporteGeneral({ state, onAction }: { state: AppState, onAction: (type:
                     <TableCell className="text-center py-3 px-4">
                       <span className="badge badge-neutral font-black">
                         {p.ventaFraccionada 
-                          ? `${((p.stockML || 0) / (p.volumenTotalML || 1000)).toFixed(2)}`
+                          ? `${((stockMLDisponible(p, state.productos) || 0) / (p.volumenTotalML || 1000)).toFixed(2)}`
                           : formatStock(p.stock, p.cantidad)
                         }
                       </span>

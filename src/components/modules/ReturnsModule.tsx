@@ -25,6 +25,7 @@ import { toast } from '@/hooks/use-toast';
 // IMPORT RTDB
 // ============================================================
 import { restoreStockRTDB } from '@/lib/rtdb-utils';
+import { actualizarStockProducto } from '@/lib/stock-utils';
 
 export default function ReturnsModule({ state, updateState, onBackToPOS, terminalId }: { state: AppState, updateState: (s: Partial<AppState>) => void, onBackToPOS: () => void, terminalId?: string }) {
   const [view, setView] = useState<'list' | 'create'>('list');
@@ -103,6 +104,7 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
 
       // ===== ACTUALIZAR STOCK EN RTDB Y FIRESTORE =====
       const itemsParaRestaurar: { productoId: string, cantidad: number }[] = [];
+      let productosActualizados = [...state.productos];
       
       for (const item of returnItems) {
         const producto = state.productos.find(p => p.id === item.productoId);
@@ -113,8 +115,10 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
             cantidad: item.cantidad
           });
           
-          // También actualizar en Firestore (para mantener consistencia)
-          const productoActualizado = { ...producto, stock: producto.stock + item.cantidad };
+          // También actualizar en Firestore (mantener stock y stockML al día,
+          // y recalcular los kits virtuales que usan este producto como componente).
+          productosActualizados = actualizarStockProducto(productosActualizados, item.productoId, item.cantidad, undefined);
+          const productoActualizado = productosActualizados.find(x => x.id === item.productoId)!;
           await Collections.set('productos', producto.id, productoActualizado);
         }
       }
@@ -128,18 +132,18 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
       // ===== GUARDAR MOVIMIENTOS =====
       const nuevosMovimientos: Movimiento[] = [];
       for (const item of returnItems) {
-        const producto = state.productos.find(p => p.id === item.productoId);
-        if (producto) {
+        const prodActualizado = productosActualizados.find(x => x.id === item.productoId);
+        if (prodActualizado) {
           const stockActualizado = item.estadoProducto === 'REINTEGRADO_STOCK' 
-            ? producto.stock + item.cantidad 
-            : producto.stock;
+            ? prodActualizado.stock 
+            : (state.productos.find(x => x.id === item.productoId)?.stock ?? 0);
           
           const mov: Movimiento = {
             id: Store.uid(),
             productoId: item.productoId,
             tipo: 'devolucion',
             cantidad: item.cantidad,
-            stockAntes: producto.stock,
+            stockAntes: state.productos.find(x => x.id === item.productoId)?.stock ?? 0,
             stockDespues: stockActualizado,
             fecha: ahoraStr,
             referencia: `DEVOLUCIÓN ${idDev} - REF VENTA ${selectedSale.id}`,
@@ -149,6 +153,11 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
           nuevosMovimientos.push(mov);
         }
       }
+
+      updateState({
+        productos: productosActualizados,
+        movimientos: [...state.movimientos, ...nuevosMovimientos]
+      });
 
       // ===== ACTUALIZAR VENTA (ESTADO) =====
       const ventaActualizada: Sale = { 
@@ -220,6 +229,7 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
 
       // ===== ACTUALIZAR STOCK EN RTDB Y FIRESTORE =====
       const itemsParaRestaurar: { productoId: string, cantidad: number }[] = [];
+      let productosActualizados = [...state.productos];
       
       for (const item of selectedSale.items) {
         const producto = state.productos.find(p => p.id === item.productoId);
@@ -230,8 +240,10 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
             cantidad: item.cantidad
           });
           
-          // También actualizar en Firestore (para mantener consistencia)
-          const productoActualizado = { ...producto, stock: producto.stock + item.cantidad };
+          // También actualizar en Firestore (mantener stock y stockML al día,
+          // y recalcular los kits virtuales que usan este producto como componente).
+          productosActualizados = actualizarStockProducto(productosActualizados, item.productoId, item.cantidad, undefined);
+          const productoActualizado = productosActualizados.find(x => x.id === item.productoId)!;
           await Collections.set('productos', producto.id, productoActualizado);
         }
       }
@@ -243,23 +255,30 @@ export default function ReturnsModule({ state, updateState, onBackToPOS, termina
       }
 
       // ===== GUARDAR MOVIMIENTOS =====
+      const nuevosMovimientosAnu: Movimiento[] = [];
       for (const item of selectedSale.items) {
-        const producto = state.productos.find(p => p.id === item.productoId);
-        if (producto) {
+        const prodActualizado = productosActualizados.find(x => x.id === item.productoId);
+        if (prodActualizado) {
           const mov: Movimiento = {
             id: Store.uid(),
             productoId: item.productoId,
             tipo: 'anulacion',
             cantidad: item.cantidad,
-            stockAntes: producto.stock,
-            stockDespues: producto.stock + item.cantidad,
+            stockAntes: state.productos.find(x => x.id === item.productoId)?.stock ?? 0,
+            stockDespues: prodActualizado.stock,
             fecha: ahoraStr,
             referencia: `ANULACIÓN TOTAL FACTURA #${selectedSale.id}`,
             terminalId: terminalId || 'GLOBAL'
           };
           await Collections.set('movimientos', mov.id, mov);
+          nuevosMovimientosAnu.push(mov);
         }
       }
+
+      updateState({
+        productos: productosActualizados,
+        movimientos: [...state.movimientos, ...nuevosMovimientosAnu]
+      });
 
       // ===== ACTUALIZAR VENTA (ESTADO) =====
       const ventaAnulada: Sale = { 

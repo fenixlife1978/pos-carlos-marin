@@ -20,6 +20,7 @@ import { Store, Utils, Collections } from '@/lib/db-store';
 import { AppState, Product, Movimiento, PaymentMethod, KitItem, Supplier, LibroDiarioEntry, Debt } from '@/lib/types';
 import { toast } from '@/hooks/use-toast';
 import { ProductFormModal } from '@/components/inventory/ProductFormModal';
+import { actualizarStockProducto, unidadesAMl } from '@/lib/stock-utils';
 
 interface PurchaseItemTemp {
   productoId: string;
@@ -204,6 +205,7 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
         const costoActual = p.costoUSD || 0;
         const nuevaCantidad = itemCompra.cantidad;
         const nuevoCosto = itemCompra.costoUnitarioUSD;
+        const stockMLPrev = p.stockML ?? (p.stock || 0) * (p.volumenPorUnidad || 1);
         
         const stockTotal = stockActual + nuevaCantidad;
         // Costo Promedio Ponderado con 4 decimales
@@ -211,10 +213,17 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
           Math.round((((stockActual * costoActual) + (nuevaCantidad * nuevoCosto)) / stockTotal + Number.EPSILON) * 10000) / 10000 : 
           nuevoCosto;
 
-        return { ...p, stock: stockTotal, costoUSD: costoPromedio };
+        // Mantener stockML al día (base del stock virtual de licores fraccionados).
+        return { ...p, stock: stockTotal, costoUSD: costoPromedio, stockML: stockMLPrev + unidadesAMl(p, nuevaCantidad) };
       }
       return p;
     });
+
+    // 🔑 Recalcular en tiempo real los kits virtuales que usan productos del lote como componentes.
+    let productosConKits = [...nuevosProductos];
+    for (const item of loteTemporal) {
+      productosConKits = actualizarStockProducto(productosConKits, item.productoId, 0, 0);
+    }
 
     const nuevosMovimientos: Movimiento[] = loteTemporal.map(item => {
       const p = state.productos.find(prod => prod.id === item.productoId);
@@ -276,7 +285,7 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
     }
 
     // 🔑 PERSISTIR EN COLECCIONES RAÍZ (ya NO se guarda en config/global)
-    for (const p of nuevosProductos) {
+    for (const p of productosConKits) {
       const comprado = loteTemporal.some(i => i.productoId === p.id);
       if (comprado) await Collections.set('productos', p.id, p);
     }
@@ -308,7 +317,7 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
     });
 
     updateState({
-      productos: nuevosProductos,
+      productos: productosConKits,
       movimientos: [...state.movimientos, ...nuevosMovimientos],
       libroDiario: [...nuevosAsientosDiario, ...(state.libroDiario || [])],
       cxp: nuevasCxP
