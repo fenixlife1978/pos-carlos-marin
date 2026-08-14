@@ -49,19 +49,32 @@ export const aplicarDeltaStock = (
 
 /**
  * Stock en mililitros disponible de un producto. Para kits virtuales
- * (stock_componentes) SIEMPRE se deriva del componente principal que tenga
- * stockML (no se usa el stockML propio del kit, que puede quedar desactualizado).
- * Replica la lógica de getStockMLDisponible/getComponentePrincipal del POS.
+ * (stock_componentes) SIEMPRE se deriva del stock real en unidades del
+ * componente principal (stock * mlPorUnidad). Si el componente no tiene
+ * stock real, se usa como respaldo su propio stockML. Nunca se usa el
+ * stockML propio del kit (puede quedar desactualizado).
+ *
+ * La fuente de verdad es `cp.stock`: es el campo que se actualiza en todas
+ * las operaciones (ventas, ajustes, compras, devoluciones). Por eso se
+ * prioriza derivar de él en lugar de confiar en un stockML que podría estar
+ * desincronizado.
  */
 export const stockMLDisponible = (p: Product, todos: Product[]): number => {
+  // Para un kit virtual: derivar SIEMPRE del stock real del componente.
   if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems && p.kitItems.length > 0) {
     for (const ki of p.kitItems) {
       const cp = todos.find(c => c.id === ki.productoId);
-      if (cp && cp.stockML !== undefined && cp.stockML > 0) return cp.stockML;
+      if (!cp) continue;
+      const desdeStock = stockMLDesdeStock(cp); // (cp.stock || 0) * mlPorUnidad(cp)
+      if (desdeStock > 0) return desdeStock;
+      if (cp.stockML !== undefined && cp.stockML > 0) return cp.stockML;
     }
     return 0;
   }
-  return p.stockML !== undefined ? p.stockML : stockMLDesdeStock(p);
+  // Producto normal: priorizar stock real convertido, respaldo stockML.
+  const desdeStock = stockMLDesdeStock(p);
+  if (desdeStock > 0) return desdeStock;
+  return p.stockML !== undefined ? p.stockML : 0;
 };
 
 /**

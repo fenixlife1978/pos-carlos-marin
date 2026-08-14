@@ -51,6 +51,7 @@ import FloatingPaymentModal from '@/components/pos/FloatingPaymentModal';
 import { toast } from '@/hooks/use-toast';
 import { AppState, SaleItem, Sale, PaymentMethod, ReportZ, PagoRealizado, Customer, Return, ReturnItem, Product, Debt, Movimiento, LibroDiarioEntry } from '@/lib/types';
 import { Utils, Store, Collections } from '@/lib/db-store';
+import { stockMLDisponible, mlPorUnidad } from '@/lib/stock-utils';
 import ReturnsModule from '@/components/modules/ReturnsModule';
 import { cn } from '@/lib/utils';
 
@@ -118,10 +119,15 @@ function extractDocType(cedula: string): string {
 // ============================================================
 // FORMATO DE PRECIO POR ML (usa más decimales para montos pequeños)
 // ============================================================
-const fmtPrecioML = (v: number) => '$' + Number(v).toLocaleString('en-US', {
-  minimumFractionDigits: 4,
-  maximumFractionDigits: 4,
-});
+const fmtPrecioML = (v: number) => {
+  const n = Number(v) || 0;
+  // Si el precio es muy pequeño (< $0.01/ml), mostrar hasta 6 decimales.
+  const decimals = n > 0 && n < 1 ? 6 : 4;
+  return '$' + n.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+};
 
 export default function SalesModule({ state, updateState }: { state: AppState, updateState: (s: Partial<AppState>) => void }) {
   const [search, setSearch] = useState('');
@@ -433,9 +439,9 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   // FUNCIÓN GET STOCK DISPONIBLE (CORREGIDA con optional chaining)
   // ============================================================
   const getStockDisponible = (p: Product) => {
-    // Si es venta fraccionada, retornar stock en ml
-    if (p.ventaFraccionada && p.stockML !== undefined) {
-      return p.stockML;
+    // Si es venta fraccionada, retornar stock real en ml (derivado del componente)
+    if (p.ventaFraccionada) {
+      return stockMLDisponible(p, state.productos);
     }
     
     let avail = p.stock || 0;
@@ -455,24 +461,11 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   // NUEVA FUNCIÓN: OBTENER STOCK EN ML REAL (para kits virtuales)
   // ============================================================
   const getStockMLDisponible = (p: Product): number => {
-    // Para kits virtuales (stock_componentes) SIEMPRE derivar del componente
-    // principal con stockML. El stockML propio del kit puede quedar desactualizado.
-    if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems && p.kitItems.length > 0) {
-      for (const ki of p.kitItems) {
-        const cp = state.productos.find(c => c.id === ki.productoId);
-        if (cp && cp.stockML !== undefined && cp.stockML > 0) {
-          return cp.stockML;
-        }
-      }
-      return 0;
-    }
-
-    // Producto normal: usar su propio stockML
-    if (p.stockML !== undefined && p.stockML > 0) {
-      return p.stockML;
-    }
-
-    return 0;
+    // Delega en la utilidad robusta de stock-utils, que SIEMPRE deriva el
+    // stock en ml del stock real (unidades) del componente principal en kits
+    // virtuales, usando stockML como respaldo. Así el modal refleja el valor
+    // real (p.ej. 385096 ml) y no el stockML desactualizado del kit.
+    return stockMLDisponible(p, state.productos);
   };
 
   // ============================================================
@@ -487,10 +480,41 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   };
 
   // ============================================================
-  // FUNCIÓN CALCULAR FRACCIÓN (CORREGIDA: usa precioUSD como precio por ml)
+  // FUNCIÓN OBTENER PRECIO POR ML
+  // Deriva automáticamente el precio por ml del kit fraccionado. Si el kit no
+  // tiene precioUSD exportado directamente (precio por ml), lo calcula a partir
+  // del precio total y el volumen, o de su componente principal.
+  // ============================================================
+  const getPrecioML = (p: Product): number => {
+    // Precio por ml explícito del producto
+    if (p.precioUSD && p.precioUSD > 0) {
+      return p.precioUSD;
+    }
+    // Precio total sobre volumen total exportado
+    if (p.precioTotalUSD && p.volumenTotalML && p.volumenTotalML > 0) {
+      const porMl = p.precioTotalUSD / p.volumenTotalML;
+      if (porMl > 0) return porMl;
+    }
+    // Para kits virtuales: derivar del componente principal
+    if (p.isKit && p.kitType === 'stock_componentes') {
+      const cp = getComponentePrincipal(p);
+      if (cp) {
+        if (cp.precioUSD && cp.precioUSD > 0) return cp.precioUSD;
+        if (cp.precioTotalUSD && cp.volumenTotalML && cp.volumenTotalML > 0) {
+          const porMl = cp.precioTotalUSD / cp.volumenTotalML;
+          if (porMl > 0) return porMl;
+        }
+        if (cp.precioUSD) return cp.precioUSD;
+      }
+    }
+    return 0;
+  };
+
+  // ============================================================
+  // FUNCIÓN CALCULAR FRACCIÓN (usa getPrecioML derivado)
   // ============================================================
   const calcularFraccion = (montoBS: number, producto: Product): number => {
-    const precioPorMlUSD = producto.precioUSD || 0;
+    const precioPorMlUSD = getPrecioML(producto);
     if (precioPorMlUSD <= 0) return 0;
     // Convertir monto BS a USD
     const montoUSD = montoBS / state.tasa;
@@ -562,10 +586,10 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
       return;
     }
     
-    // Verificar monto mínimo (mínimo 50ml) - usando precioUSD * 50ml * tasa
+    // Verificar monto mínimo (mínimo 50ml) - usando precio por ml derivado
     const mlMinimo = 50;
     if (mlAVender < mlMinimo) {
-      const precioMinimoUSD = (p.precioUSD || 0) * mlMinimo;
+      const precioMinimoUSD = getPrecioML(p) * mlMinimo;
       const precioMinimoBS = precioMinimoUSD * state.tasa;
       toast({ 
         variant: "destructive", 
@@ -806,7 +830,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         
         // ===== VENTA FRACCIONADA =====
         if (p.ventaFraccionada && item.esFraccion && item.volumenML) {
-          let stockMLActual = p.stockML || 0;
+          let stockMLActual = stockMLDisponible(p, state.productos);
           let productoActualizar = p;
           let componentePrincipal = null;
           
@@ -814,13 +838,19 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
           if (p.isKit && p.kitType === 'stock_componentes') {
             componentePrincipal = getComponentePrincipal(p);
             if (componentePrincipal) {
-              stockMLActual = componentePrincipal.stockML || 0;
+              stockMLActual = stockMLDisponible(componentePrincipal, state.productos);
               productoActualizar = componentePrincipal;
             }
           }
           
-          const nuevoStockML = stockMLActual - item.volumenML;
-          const pActualizado = { ...productoActualizar, stockML: nuevoStockML };
+          // Descontar volumen en ml del stockML
+          const nuevoStockML = Math.max(0, stockMLActual - item.volumenML);
+          // Descontar el equivalente en unidades del stock real (fuente de verdad)
+          const factorUnidad = mlPorUnidad(productoActualizar);
+          const unidadesADescontar = factorUnidad > 0 ? (item.volumenML / factorUnidad) : 0;
+          const nuevoStock = Math.max(0, (productoActualizar.stock || 0) - unidadesADescontar);
+          
+          const pActualizado = { ...productoActualizar, stock: nuevoStock, stockML: nuevoStockML };
           await Collections.set('productos', productoActualizar.id, pActualizado);
           prodsActualizados.push(pActualizado);
           
@@ -828,9 +858,9 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
             id: Store.uid(),
             productoId: productoActualizar.id,
             tipo: 'venta',
-            cantidad: -item.volumenML,
-            stockAntes: stockMLActual,
-            stockDespues: nuevoStockML,
+            cantidad: -unidadesADescontar,
+            stockAntes: productoActualizar.stock || 0,
+            stockDespues: nuevoStock,
             fecha: ahoraStr,
             referencia: `VENTA FRACCIONADA ${reciboId} - ${item.volumenML}ml (desde kit: ${p.nombre})`,
             terminalId: terminal?.id || 'GLOBAL'
@@ -1071,7 +1101,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
         
         // ===== VENTA FRACCIONADA =====
         if (p.ventaFraccionada && item.esFraccion && item.volumenML) {
-          let stockMLActual = p.stockML || 0;
+          let stockMLActual = stockMLDisponible(p, state.productos);
           let productoActualizar = p;
           let componentePrincipal = null;
           
@@ -1079,22 +1109,26 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
           if (p.isKit && p.kitType === 'stock_componentes') {
             componentePrincipal = getComponentePrincipal(p);
             if (componentePrincipal) {
-              stockMLActual = componentePrincipal.stockML || 0;
+              stockMLActual = stockMLDisponible(componentePrincipal, state.productos);
               productoActualizar = componentePrincipal;
             }
           }
           
-          const nuevoStockML = stockMLActual - item.volumenML;
-          const pActualizado = { ...productoActualizar, stockML: nuevoStockML };
+          // Descontar volumen en ml del stockML y su equivalente en unidades del stock real
+          const nuevoStockML = Math.max(0, stockMLActual - item.volumenML);
+          const factorUnidad = mlPorUnidad(productoActualizar);
+          const unidadesADescontar = factorUnidad > 0 ? (item.volumenML / factorUnidad) : 0;
+          const nuevoStock = Math.max(0, (productoActualizar.stock || 0) - unidadesADescontar);
+          const pActualizado = { ...productoActualizar, stock: nuevoStock, stockML: nuevoStockML };
           await Collections.set('productos', productoActualizar.id, pActualizado);
           
           const mov: Movimiento = {
             id: Store.uid(),
             productoId: productoActualizar.id,
             tipo: 'venta',
-            cantidad: -item.volumenML,
-            stockAntes: stockMLActual,
-            stockDespues: nuevoStockML,
+            cantidad: -unidadesADescontar,
+            stockAntes: productoActualizar.stock || 0,
+            stockDespues: nuevoStock,
             fecha: ahoraStr,
             referencia: `VENTA FRACCIONADA ${reciboId} - ${item.volumenML}ml (desde kit: ${p.nombre})`,
             terminalId: terminal?.id || 'GLOBAL'
@@ -1948,7 +1982,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                   Stock: {getStockMLDisponible(showFraccionSelector.producto)} ml
                 </p>
                 <p className="text-[10px] text-ink/40">
-                  Precio por ml: {fmtPrecioML(showFraccionSelector.producto.precioUSD || 0)}
+                  Precio por ml: {fmtPrecioML(getPrecioML(showFraccionSelector.producto))}
                 </p>
               </div>
               
@@ -1978,7 +2012,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                   <div className="flex justify-between text-[8px] font-black">
                     <span className="text-ink/40">Mínimo: 50 ml</span>
                     <span className="text-ink/40">
-                      Máximo: {Utils.fmtBS((getStockMLDisponible(showFraccionSelector.producto) * (showFraccionSelector.producto.precioUSD || 0)) * state.tasa)}
+                      Máximo: {Utils.fmtBS((getStockMLDisponible(showFraccionSelector.producto) * getPrecioML(showFraccionSelector.producto)) * state.tasa)}
                     </span>
                   </div>
                 </div>
@@ -1987,7 +2021,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                 <div className="flex flex-wrap gap-2 justify-center">
                   {[50, 100, 200, 300, 500, 750].map(ml => {
                     const producto = showFraccionSelector.producto;
-                    const precioUSD = (producto.precioUSD || 0) * ml;
+                    const precioUSD = getPrecioML(producto) * ml;
                     const precioBS = precioUSD * state.tasa;
                     return (
                       <button
@@ -2024,14 +2058,20 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                       <p className="text-xl font-black text-ink">{Utils.fmtUSD(montoFraccionBS / state.tasa)}</p>
                     </div>
                   </div>
-                  {showFraccionSelector.producto.precioUSD && (
-                    <div className="mt-2 pt-2 border-t border-line/30 text-center">
-                      <span className="text-[8px] font-black text-ink/40">Precio por ml: </span>
-                      <span className="text-[10px] font-black text-brand-gold-deep">
-                        {fmtPrecioML(showFraccionSelector.producto.precioUSD)} ≈ {Utils.fmtBS(showFraccionSelector.producto.precioUSD * state.tasa)}
-                      </span>
-                    </div>
-                  )}
+                  {(() => {
+                    const precioML = getPrecioML(showFraccionSelector.producto);
+                    if (precioML > 0) {
+                      return (
+                        <div className="mt-2 pt-2 border-t border-line/30 text-center">
+                          <span className="text-[8px] font-black text-ink/40">Precio por ml: </span>
+                          <span className="text-[10px] font-black text-brand-gold-deep">
+                            {fmtPrecioML(precioML)} ≈ {Utils.fmtBS(precioML * state.tasa)}
+                          </span>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
               </div>
             </div>
