@@ -116,6 +116,12 @@ function extractDocType(cedula: string): string {
 // ============================================================
 // COMPONENTE PRINCIPAL
 // ============================================================
+// FORMATO DE PRECIO POR ML (usa más decimales para montos pequeños)
+// ============================================================
+const fmtPrecioML = (v: number) => '$' + Number(v).toLocaleString('en-US', {
+  minimumFractionDigits: 4,
+  maximumFractionDigits: 4,
+});
 
 export default function SalesModule({ state, updateState }: { state: AppState, updateState: (s: Partial<AppState>) => void }) {
   const [search, setSearch] = useState('');
@@ -157,6 +163,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   const [nuevaTasa, setNuevaTasa] = useState(state.tasa.toString());
 
   const [expandedClient, setExpandedClient] = useState<string | null>(null);
+  const [creditsSearch, setCreditsSearch] = useState('');
   const [showClientHistory, setShowClientHistory] = useState<string | null>(null);
 
   // ===== NUEVOS ESTADOS PARA FILTROS DE HISTORIAL =====
@@ -404,6 +411,24 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
     return groups;
   }, [state.cxc]);
 
+  // Filtro inteligente de créditos: busca por nombre del cliente,
+  // número de factura, identificación, concepto o id de venta.
+  const filteredCredits = useMemo(() => {
+    const q = creditsSearch.trim().toLowerCase();
+    if (!q) return groupedCredits;
+    const out: Record<string, { totalUSD: number; debts: Debt[] }> = {};
+    Object.entries(groupedCredits).forEach(([clientName, group]) => {
+      const matchClient = clientName.toLowerCase().includes(q);
+      const matchDebt = group.debts.some(d =>
+        (d.numeroFactura && d.numeroFactura.toLowerCase().includes(q)) ||
+        (d.concepto && d.concepto.toLowerCase().includes(q)) ||
+        (d.ventaId && d.ventaId.toLowerCase().includes(q))
+      );
+      if (matchClient || matchDebt) out[clientName] = group;
+    });
+    return out;
+  }, [groupedCredits, creditsSearch]);
+
   // ============================================================
   // FUNCIÓN GET STOCK DISPONIBLE (CORREGIDA con optional chaining)
   // ============================================================
@@ -430,22 +455,23 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
   // NUEVA FUNCIÓN: OBTENER STOCK EN ML REAL (para kits virtuales)
   // ============================================================
   const getStockMLDisponible = (p: Product): number => {
-    // Si el producto tiene stockML propio, usarlo
-    if (p.stockML !== undefined && p.stockML > 0) {
-      return p.stockML;
-    }
-    
-    // Si es un kit virtual con componentes, buscar el stock en ml del primer componente
+    // Para kits virtuales (stock_componentes) SIEMPRE derivar del componente
+    // principal con stockML. El stockML propio del kit puede quedar desactualizado.
     if (p.isKit && p.kitType === 'stock_componentes' && p.kitItems && p.kitItems.length > 0) {
-      // Buscar el primer componente que tenga stockML
       for (const ki of p.kitItems) {
         const cp = state.productos.find(c => c.id === ki.productoId);
         if (cp && cp.stockML !== undefined && cp.stockML > 0) {
           return cp.stockML;
         }
       }
+      return 0;
     }
-    
+
+    // Producto normal: usar su propio stockML
+    if (p.stockML !== undefined && p.stockML > 0) {
+      return p.stockML;
+    }
+
     return 0;
   };
 
@@ -1751,9 +1777,21 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
             <h3 className="text-white font-black uppercase italic tracking-tighter flex items-center gap-2 text-xs">
               <ClipboardList className="w-5 h-5 text-brand-gold" /> CONSULTA CRÉDITOS Y COBRANZA (GLOBAL)
             </h3>
-            <button onClick={() => setView('pos')} className="btn btn-sm bg-white text-ink hover:bg-surface-soft flex items-center gap-2 font-black uppercase text-[10px] rounded-lg border-none px-4">
-              <ArrowLeft className="w-3.5 h-3.5"/> Volver al POS
-            </button>
+            <div className="flex items-center gap-3">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-ink/40" />
+                <input
+                  type="text"
+                  value={creditsSearch}
+                  onChange={e => { setCreditsSearch(e.target.value); setExpandedClient(null); }}
+                  placeholder="Buscar por cliente, factura, concepto..."
+                  className="form-input pl-8 h-8 text-[10px] font-black bg-white/95 rounded-lg w-64"
+                />
+              </div>
+              <button onClick={() => setView('pos')} className="btn btn-sm bg-white text-ink hover:bg-surface-soft flex items-center gap-2 font-black uppercase text-[10px] rounded-lg border-none px-4">
+                <ArrowLeft className="w-3.5 h-3.5"/> Volver al POS
+              </button>
+            </div>
           </div>
           <div className="table-wrap flex-1 overflow-y-auto">
             <table className="w-full">
@@ -1768,10 +1806,10 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(groupedCredits).length === 0 ? (
-                  <tr><td colSpan={6} className="text-center py-20 text-ink font-black uppercase italic">No hay deudas registradas</td></tr>
+                {Object.entries(filteredCredits).length === 0 ? (
+                  <tr><td colSpan={6} className="text-center py-20 text-ink font-black uppercase italic">{creditsSearch ? 'Sin resultados para la búsqueda' : 'No hay deudas registradas'}</td></tr>
                 ) : (
-                  Object.entries(groupedCredits).map(([clientName, group]) => (
+                  Object.entries(filteredCredits).map(([clientName, group]) => (
                     <React.Fragment key={clientName}>
                       <tr className="border-b border-line hover:bg-surface-warm/20 transition-colors">
                         <td className="px-6 py-4">
@@ -1910,7 +1948,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                   Stock: {getStockMLDisponible(showFraccionSelector.producto)} ml
                 </p>
                 <p className="text-[10px] text-ink/40">
-                  Precio por ml: {Utils.fmtUSD(showFraccionSelector.producto.precioUSD || 0)}
+                  Precio por ml: {fmtPrecioML(showFraccionSelector.producto.precioUSD || 0)}
                 </p>
               </div>
               
@@ -1990,7 +2028,7 @@ export default function SalesModule({ state, updateState }: { state: AppState, u
                     <div className="mt-2 pt-2 border-t border-line/30 text-center">
                       <span className="text-[8px] font-black text-ink/40">Precio por ml: </span>
                       <span className="text-[10px] font-black text-brand-gold-deep">
-                        {Utils.fmtUSD(showFraccionSelector.producto.precioUSD)} ≈ {Utils.fmtBS(showFraccionSelector.producto.precioUSD * state.tasa)}
+                        {fmtPrecioML(showFraccionSelector.producto.precioUSD)} ≈ {Utils.fmtBS(showFraccionSelector.producto.precioUSD * state.tasa)}
                       </span>
                     </div>
                   )}
