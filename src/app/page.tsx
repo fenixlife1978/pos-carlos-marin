@@ -139,7 +139,12 @@ export default function LicoreriaPOS() {
       });
       unsubscribes.current.push(unsubTerminals);
 
-      const unsubSales = Collections.subscribeWhere('ventas', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
+      // 🔑 VENTAS: se suscriben TODAS (sin filtrar por terminal) para que los
+      // reportes X/Z, el historial de ventas y el reporte de rentabilidad nunca
+      // salgan en blanco. El filtrado por terminal se hace downstream:
+      // ReportsModule filtra por terminal ('all' por defecto) y SalesModule usa
+      // currentTerminal.id, por lo que cada cajero solo ve lo suyo.
+      const unsubSales = Collections.subscribeAll('ventas', (list) => {
         setState(prev => ({ ...prev, ventas: list }) as AppState);
       });
       unsubscribes.current.push(unsubSales);
@@ -172,17 +177,17 @@ export default function LicoreriaPOS() {
       });
       unsubscribes.current.push(unsubDiario);
 
-      const unsubDev = Collections.subscribeWhere('devoluciones', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
+      const unsubDev = Collections.subscribeAll('devoluciones', (list) => {
         setState(prev => ({ ...prev, devoluciones: list }) as AppState);
       });
       unsubscribes.current.push(unsubDev);
 
-      const unsubAnu = Collections.subscribeWhere('anulaciones', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
+      const unsubAnu = Collections.subscribeAll('anulaciones', (list) => {
         setState(prev => ({ ...prev, anulaciones: list }) as AppState);
       });
       unsubscribes.current.push(unsubAnu);
 
-      const unsubZ = Collections.subscribeWhere('reportesZ', 'terminalId', '==', terminalId || 'GLOBAL', (list) => {
+      const unsubZ = Collections.subscribeAll('reportesZ', (list) => {
         setState(prev => ({ ...prev, reportesZ: list }) as AppState);
       });
       unsubscribes.current.push(unsubZ);
@@ -433,7 +438,9 @@ export default function LicoreriaPOS() {
 
   useEffect(() => {
     if (mounted) {
-      const savedCart = sessionStorage.getItem('posven_current_cart');
+      // 🔑 CARRI TO EN localStorage: sobrevive a cortes de luz y cierres
+      // bruscos del navegador (sessionStorage se pierde al apagarse el equipo).
+      const savedCart = localStorage.getItem('posven_current_cart');
       if (savedCart) {
         try {
           const items = JSON.parse(savedCart);
@@ -447,7 +454,7 @@ export default function LicoreriaPOS() {
 
   useEffect(() => {
     if (mounted && state.carrito) {
-      sessionStorage.setItem('posven_current_cart', JSON.stringify(state.carrito));
+      localStorage.setItem('posven_current_cart', JSON.stringify(state.carrito));
     }
   }, [state.carrito, mounted]);
 
