@@ -1,8 +1,8 @@
-'use client';
+"use client";
 
 import React, { useState, useEffect } from 'react';
 import { AppState, LibroDiarioEntry, PaymentMethod, Debt } from '@/lib/types';
-import { Utils, Store, Collections } from '@/lib/db-store';
+import { Utils, Store, Collections, PROVIDERS_COLLECTION } from '@/lib/db-store';
 import { 
   FileText, 
   Calculator, 
@@ -34,11 +34,16 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
   const [showDetails, setShowDetails] = useState<any>(null);
   const [showPaymentModal, setShowPaymentModal] = useState<any>(null);
   const [paymentAmount, setPaymentAmount] = useState('');
-const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd');
+  
+  const [showDeudaDirectaModal, setShowDeudaDirectaModal] = useState(false);
+  const [proveedorSearch, setProveedorSearch] = useState('');
+  const [selectedProveedor, setSelectedProveedor] = useState('');
+  const [deudaMonto, setDeudaMonto] = useState('');
+  const [deudaMotivo, setDeudaMotivo] = useState('');
+  const [fechaDeuda, setFechaDeuda] = useState(Utils.hoy());
+  const [fechaVencimiento, setFechaVencimiento] = useState(Utils.hoy());
 
-  // ============================================================
-  // ALERTAS DE VENCIMIENTO (24 HORAS)
-  // ============================================================
   const [vencimientosProximos, setVencimientosProximos] = useState<Debt[]>([]);
   const [showVencimientoAlert, setShowVencimientoAlert] = useState(false);
 
@@ -76,65 +81,10 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
   const pendientes = (state.cxp || []).filter((x: Debt) => x.estado !== 'pagada');
   const totalPendiente = pendientes.reduce((s: number, x: Debt) => s + x.saldoUSD, 0);
 
-  // NUEVO: Obtener deudas por proveedor con filtro de rango de fechas
-  const proveedoresConDeudas = useMemo(() => {
-    // Filtrar por proveedor si hay búsqueda
-    const proveedoresFiltrados = (state.proveedores || []).filter((p: any) =>
-      p.toLowerCase().includes(proveedorBusqueda.toLowerCase())
-    );
-    
-    // Agrupar deudas por proveedor con rango de fechas
-    const result: Record<string, { totalUSD: number; deudas: Debt[] }> = {};
-    
-    (state.cxp || []).forEach((deuda: Debt) => {
-      // Aplicar filtro de rango de fechas
-      let incluye = true;
-      if (fechaDesde) {
-        const fechaDeuda = new Date(deuda.fechaVencimiento);
-        const fechaInicio = new Date(fechaDesde);
-        if (fechaDeuda < fechaInicio) incluye = false;
-      }
-      if (fechaHasta) {
-        const fechaDeuda = new Date(deuda.fechaVencimiento);
-        const fechaFin = new Date(fechaHasta);
-        if (fechaDeuda > fechaFin) incluye = false;
-      }
-      
-      if (incluye && deuda.estado !== 'pagada') {
-        const proveedor = deuda.proveedor || 'SIN PROVEEDOR';
-        if (!result[proveedor]) {
-          result[proveedor] = { totalUSD: 0, deudas: [] };
-        }
-        result[proveedor].totalUSD += deuda.saldoUSD;
-        result[proveedor].deudas.push(deuda);
-      }
-    });
-    
-    // Convertir a array y ordenar por total descendente
-    return Object.entries(result).map(([proveedor, data]) => ({
-      proveedor,
-      totalUSD: data.totalUSD,
-      deudas: data.deudas.sort((a: Debt, b: Debt) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime())
-    })).sort((a: any, b: any) => b.totalUSD - a.totalUSD);
-  }, [state.cxp, proveedorBusqueda, fechaDesde, fechaHasta]);
-
-  // NUEVO: Total acumulado de todas las deudas (sin filtro de proveedor)
-  const totalGlobalDeudas = useMemo(() => {
-    let total = 0;
-    (state.cxp || []).forEach((d: Debt) => {
-      if (d.estado !== 'pagada') {
-        total += d.saldoUSD;
-      }
-    });
-    return total;
-  }, [state.cxp]);
-
-  // Obtener proveedores únicos de las compras recibidas
   const proveedoresExistentes: string[] = state.proveedores && Array.isArray(state.proveedores)
     ? state.proveedores.map((p: any) => p.name || p.nombre || 'PROVEEDOR SIN NOMBRE')
     : [];
 
-  // Filtrar proveedores según búsqueda
   const proveedoresFiltrados = proveedoresExistentes.filter((p: string) => 
     p.toLowerCase().includes(proveedorSearch.toLowerCase())
   );
@@ -167,7 +117,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
 
     const ahoraStr = Utils.ahora();
     
-    // 1. Actualizar CxP en Firestore
     const deudaActual = state.cxp.find((c: Debt) => c.id === showPaymentModal.id);
     if (!deudaActual) {
       toast({
@@ -196,7 +145,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
 
     await Collections.set('cxp', deudaActual.id, nuevaDeuda);
 
-    // 2. Crear Asiento Contable (Egreso)
     const nombreProveedor = deudaActual.proveedor || 'PROVEEDOR SIN NOMBRE';
     const nuevoAsiento: LibroDiarioEntry = {
       id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
@@ -266,7 +214,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
 
     await Collections.set('cxp', nuevaDeuda.id, nuevaDeuda);
 
-    // Crear asiento contable por la deuda
     const nuevoAsiento: LibroDiarioEntry = {
       id: 'ACC-' + Store.uid().toUpperCase().slice(0, 5),
       fecha: Utils.ahora(),
@@ -280,7 +227,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
     };
     await Collections.set('libroDiario', nuevoAsiento.id, nuevoAsiento);
 
-    // Actualizar estado local
     updateState({
       cxp: [...(state.cxp || []), nuevaDeuda],
       libroDiario: [nuevoAsiento, ...(state.libroDiario || [])]
@@ -291,7 +237,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
       description: `Se ha registrado la deuda de ${Utils.fmtUSD(monto)} a ${selectedProveedor}`
     });
 
-    // Resetear formulario
     setShowDeudaDirectaModal(false);
     setSelectedProveedor('');
     setDeudaMonto('');
@@ -303,9 +248,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
 
   return (
     <div className="space-y-6">
-      {/* ============================================================
-        ALERTA DE VENCIMIENTO (24 HORAS)
-      ============================================================ */}
       {showVencimientoAlert && vencimientosProximos.length > 0 && (
         <div className="modal show" style={{ zIndex: 9999 }}>
           <div className="modal-bg" onClick={() => setShowVencimientoAlert(false)} />
@@ -464,7 +406,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
         </div>
       </div>
 
-      {/* MODAL DETALLES AVANZADOS (HISTORIAL) */}
       {showDetails && (
         <div className="modal show"><div className="modal-bg" onClick={() => setShowDetails(null)}></div>
           <div className="modal-box max-w-[600px] bg-white border-2 border-line rounded-xl overflow-hidden shadow-2xl">
@@ -600,7 +541,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
         </div>
       )}
 
-      {/* MODAL DE DEUDA DIRECTA A PROVEEDOR */}
       {showDeudaDirectaModal && (
         <div className="modal show">
           <div className="modal-bg" onClick={() => setShowDeudaDirectaModal(false)}></div>
@@ -614,7 +554,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
               </button>
             </div>
             <div className="modal-body p-6 space-y-5 bg-white max-h-[80vh] overflow-y-auto">
-              {/* Buscador de Proveedor */}
               <div className="form-group">
                 <label className="text-ink text-[10px] font-black uppercase block mb-1">Buscar Proveedor</label>
                 <div className="relative">
@@ -628,7 +567,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
                 </div>
               </div>
 
-              {/* Lista de Proveedores */}
               <div className="form-group">
                 <label className="text-ink text-[10px] font-black uppercase block mb-1">Seleccionar Proveedor</label>
                 <div className="max-h-[180px] overflow-y-auto border border-line rounded-lg">
@@ -667,7 +605,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
                     <p className="text-sm font-black text-ink">{selectedProveedor}</p>
                   </div>
 
-                  {/* Fecha de la Deuda */}
                   <div className="form-group">
                     <label className="text-ink text-[10px] font-black uppercase block mb-1">Fecha de la Deuda</label>
                     <input 
@@ -678,7 +615,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
                     />
                   </div>
 
-                  {/* Fecha de Vencimiento */}
                   <div className="form-group">
                     <label className="text-ink text-[10px] font-black uppercase block mb-1 flex items-center gap-2">
                       <Clock className="w-4 h-4 text-status-warn" />
@@ -695,7 +631,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
                     </p>
                   </div>
 
-                  {/* Monto */}
                   <div className="form-group">
                     <label className="text-ink text-[10px] font-black uppercase block mb-1">Monto (USD)</label>
                     <div className="relative">
@@ -710,7 +645,6 @@ const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd'
                     </div>
                   </div>
 
-                  {/* Motivo */}
                   <div className="form-group">
                     <label className="text-ink text-[10px] font-black uppercase block mb-1">Motivo de la Deuda</label>
                     <textarea 
