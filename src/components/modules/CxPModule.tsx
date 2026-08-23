@@ -34,16 +34,7 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
   const [showDetails, setShowDetails] = useState<any>(null);
   const [showPaymentModal, setShowPaymentModal] = useState<any>(null);
   const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd');
-  
-  // Estado para el modal de Deuda Directa
-  const [showDeudaDirectaModal, setShowDeudaDirectaModal] = useState(false);
-  const [proveedorSearch, setProveedorSearch] = useState('');
-  const [selectedProveedor, setSelectedProveedor] = useState('');
-  const [deudaMonto, setDeudaMonto] = useState('');
-  const [deudaMotivo, setDeudaMotivo] = useState('');
-  const [fechaDeuda, setFechaDeuda] = useState(Utils.hoy());
-  const [fechaVencimiento, setFechaVencimiento] = useState(Utils.hoy());
+const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd');
 
   // ============================================================
   // ALERTAS DE VENCIMIENTO (24 HORAS)
@@ -84,6 +75,59 @@ export default function CxPModule({ state, updateState }: CxPModuleProps) {
 
   const pendientes = (state.cxp || []).filter((x: Debt) => x.estado !== 'pagada');
   const totalPendiente = pendientes.reduce((s: number, x: Debt) => s + x.saldoUSD, 0);
+
+  // NUEVO: Obtener deudas por proveedor con filtro de rango de fechas
+  const proveedoresConDeudas = useMemo(() => {
+    // Filtrar por proveedor si hay búsqueda
+    const proveedoresFiltrados = (state.proveedores || []).filter((p: any) =>
+      p.toLowerCase().includes(proveedorBusqueda.toLowerCase())
+    );
+    
+    // Agrupar deudas por proveedor con rango de fechas
+    const result: Record<string, { totalUSD: number; deudas: Debt[] }> = {};
+    
+    (state.cxp || []).forEach((deuda: Debt) => {
+      // Aplicar filtro de rango de fechas
+      let incluye = true;
+      if (fechaDesde) {
+        const fechaDeuda = new Date(deuda.fechaVencimiento);
+        const fechaInicio = new Date(fechaDesde);
+        if (fechaDeuda < fechaInicio) incluye = false;
+      }
+      if (fechaHasta) {
+        const fechaDeuda = new Date(deuda.fechaVencimiento);
+        const fechaFin = new Date(fechaHasta);
+        if (fechaDeuda > fechaFin) incluye = false;
+      }
+      
+      if (incluye && deuda.estado !== 'pagada') {
+        const proveedor = deuda.proveedor || 'SIN PROVEEDOR';
+        if (!result[proveedor]) {
+          result[proveedor] = { totalUSD: 0, deudas: [] };
+        }
+        result[proveedor].totalUSD += deuda.saldoUSD;
+        result[proveedor].deudas.push(deuda);
+      }
+    });
+    
+    // Convertir a array y ordenar por total descendente
+    return Object.entries(result).map(([proveedor, data]) => ({
+      proveedor,
+      totalUSD: data.totalUSD,
+      deudas: data.deudas.sort((a: Debt, b: Debt) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime())
+    })).sort((a: any, b: any) => b.totalUSD - a.totalUSD);
+  }, [state.cxp, proveedorBusqueda, fechaDesde, fechaHasta]);
+
+  // NUEVO: Total acumulado de todas las deudas (sin filtro de proveedor)
+  const totalGlobalDeudas = useMemo(() => {
+    let total = 0;
+    (state.cxp || []).forEach((d: Debt) => {
+      if (d.estado !== 'pagada') {
+        total += d.saldoUSD;
+      }
+    });
+    return total;
+  }, [state.cxp]);
 
   // Obtener proveedores únicos de las compras recibidas
   const proveedoresExistentes: string[] = state.proveedores && Array.isArray(state.proveedores)

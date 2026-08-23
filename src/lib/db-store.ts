@@ -22,6 +22,7 @@ import {
 const STORAGE_KEY = 'posven_pro_config_cache';
 const CONFIG_COLLECTION = 'config';
 const CONFIG_DOC = 'global';
+const PROVIDERS_COLLECTION = 'proveedores';
 
 // 🔑 SOLO estas claves de CONFIGURACIÓN se persisten en config/global.
 // Los datos transaccionales (ventas, movimientos, cxc, cxp, productos,
@@ -29,7 +30,7 @@ const CONFIG_DOC = 'global';
 const CONFIG_KEYS = [
   'tasa', 'comisionEfectivo', 'pinDevolucion', 'isInitialized',
   'empresa',
-  'departamentos', 'categorias', 'marcas', 'presentaciones', 'proveedores',
+  'departamentos', 'categorias', 'marcas', 'presentaciones',
   'ultimoZ', 'proximoRecibo', 'proximaDevolucion', 'proximaAnulacion',
   'acumuladoHistorico', 'fechaUltimoZ',
   'fondoCajaHoyUSD', 'fondoCajaHoyBS',
@@ -37,7 +38,7 @@ const CONFIG_KEYS = [
   'config',
   'productCategories', 'productUnits', 'productColors', 'productSizes',
   'brands', 'groups', 'subgroups', 'lines', 'suppliers',
-  'marcasString', 'proveedoresString'
+  'marcasString'
 ];
 
 // 🔑 Claves que NUNCA deben vivir en config/global (auto-limpiadas si quedaron ahí).
@@ -422,4 +423,30 @@ export const limpiarConfigGlobal = async (): Promise<number> => {
   presentes.forEach(k => delObj[k] = deleteField());
   await updateDoc(docRef, delObj);
   return presentes.length;
+}
+
+// NUEVO: Suscribirse a colección raíz de proveedores
+export const PROVIDERS_COLLECTION = 'proveedores';
+
+// Agregar estos métodos después de limpiarConfigGlobal en la sección Collections
+// (se insertarán después de la sección Collections)
+// NUEVO: Suscribirse a colección raíz de proveedores
+export const subscribeProviders = (callback: (data: any[]) => void, limitCount?: number) => {
+  if (!db) return () => {};
+  let ref: CollectionReference = collection(db, PROVIDERS_COLLECTION);
+  if (limitCount) ref = query(ref, limit(limitCount));
+  return onSnapshot(ref, (snapshot) => {
+    const list: any[] = [];
+    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+    callback(list);
+  });
+};
+
+// NUEVO: Obtener todos los proveedores de la colección raíz
+export const getAllProviders = async () => {
+  if (!db) return [];
+  const snapshot = await getDocs(collection(db, PROVIDERS_COLLECTION));
+  const list: any[] = [];
+  snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+  return list;
 };
