@@ -29,7 +29,7 @@ import {
   CheckCircle2,
   Calendar
 } from 'lucide-react';
-import { Store, initialState, Utils, Collections } from '@/lib/db-store';
+import { Store, initialState, Utils, Collections, PROVIDERS_COLLECTION } from '@/lib/db-store';
 import { AppState, Terminal, Debt } from '@/lib/types';
 import { auth, db } from '@/lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
@@ -191,6 +191,12 @@ export default function LicoreriaPOS() {
         setState(prev => ({ ...prev, reportesZ: list }) as AppState);
       });
       unsubscribes.current.push(unsubZ);
+
+      // 🔑 PROVEEDORES - Desde su propia colección raíz
+      const unsubProveedores = Collections.subscribeAll(PROVIDERS_COLLECTION, (list) => {
+        setState(prev => ({ ...prev, proveedores: list }) as AppState);
+      });
+      unsubscribes.current.push(unsubProveedores);
     };
 
     // 3. Autenticación
@@ -507,6 +513,8 @@ export default function LicoreriaPOS() {
         { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
         { id: 'inventario', label: 'Inventario', icon: Package, count: (state.productos || []).filter((p: any) => p.activo).length },
         { id: 'compras', label: 'Entradas (Compras)', icon: ShoppingBag },
+        // ✅ AGREGADO: Módulo de Proveedores
+        { id: 'proveedores', label: 'Proveedores', icon: Truck, count: (state.proveedores || []).length },
       ]
     },
     {

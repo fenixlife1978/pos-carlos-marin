@@ -22,15 +22,15 @@ import {
 const STORAGE_KEY = 'posven_pro_config_cache';
 const CONFIG_COLLECTION = 'config';
 const CONFIG_DOC = 'global';
-const PROVIDERS_COLLECTION = 'proveedores';
+
+// ✅ Colección raíz para proveedores (separada de configuración)
+export const PROVIDERS_COLLECTION = 'proveedores';
 
 // 🔑 SOLO estas claves de CONFIGURACIÓN se persisten en config/global.
-// Los datos transaccionales (ventas, movimientos, cxc, cxp, productos,
-// clientes, compras, etc.) viven EXCLUSIVAMENTE en colecciones raíz.
 const CONFIG_KEYS = [
   'tasa', 'comisionEfectivo', 'pinDevolucion', 'isInitialized',
   'empresa',
-  'departamentos', 'categorias', 'marcas', 'presentaciones',
+  'departamentos', 'categorias', 'marcas', 'presentaciones', // ← ELIMINADO 'proveedores'
   'ultimoZ', 'proximoRecibo', 'proximaDevolucion', 'proximaAnulacion',
   'acumuladoHistorico', 'fechaUltimoZ',
   'fondoCajaHoyUSD', 'fondoCajaHoyBS',
@@ -38,14 +38,15 @@ const CONFIG_KEYS = [
   'config',
   'productCategories', 'productUnits', 'productColors', 'productSizes',
   'brands', 'groups', 'subgroups', 'lines', 'suppliers',
-  'marcasString'
+  'marcasString', 'proveedoresString'
 ];
 
-// 🔑 Claves que NUNCA deben vivir en config/global (auto-limpiadas si quedaron ahí).
+// 🔑 Claves transaccionales que NUNCA deben vivir en config/global (auto-limpiadas)
 const TRANSACTIONAL_KEYS = [
   'productos', 'ventas', 'cxc', 'cxp', 'clientes', 'devoluciones',
   'anulaciones', 'movimientos', 'libroDiario', 'terminales', 'reportesZ',
-  'cashData', 'cashHistory', 'user', 'isAuthenticated'
+  'cashData', 'cashHistory', 'user', 'isAuthenticated',
+  'proveedores' // ← AGREGADO para limpiar datos antiguos
 ];
 
 export const initialState: AppState = {
@@ -75,11 +76,9 @@ export const initialState: AppState = {
   fechaUltimoZ: '',
   fondoCajaHoyUSD: 0,
   fondoCajaHoyBS: 0,
-  
   isCashOpen: false,
   cashData: null,
   cashHistory: [],
-  
   empresa: { 
     nombre: 'NOMBRE DE SU NEGOCIO', 
     rif: 'J-00000000-0', 
@@ -90,19 +89,16 @@ export const initialState: AppState = {
   categorias: ['Ron', 'Vino', 'Cerveza', 'Whisky', 'Refrescos', 'Otros'],
   marcas: ['Genérica'],
   presentaciones: ['750ml', '1L', 'Unidad', 'Caja'],
-  proveedores: [],
-  
+  proveedores: [], // ← Se mantiene pero NO se persiste en config/global
   config: {
     exchangeRate: 36.50,
     ivaRate: 16,
     igtfRate: 3
   },
-  
   productCategories: ['Repuesto', 'Lubricante', 'Filtro', 'Químico', 'Accesorio', 'Batería', 'Caucho', 'Freno', 'Suspensión', 'Motor', 'Eléctrico', 'Transmisión', 'Servicio'],
   productUnits: ['unidad', 'litro', 'galón', 'cuarto', 'paila', 'kit', 'juego', 'par', 'metro', 'kilogramo', 'gramo', 'tambor'],
   productColors: ['No Aplica', 'Negro', 'Gris', 'Cromo', 'Rojo', 'Azul', 'Blanco', 'Ámbar'],
   productSizes: ['N/A', 'Estándar', '0.10', '0.20', '0.30', '0.40', '0.50', '20', '30', '40', '50', '60'],
-  
   brands: [],
   groups: [],
   subgroups: [],
@@ -119,14 +115,10 @@ export const initialState: AppState = {
 export const Store = {
   subscribe(callback: (state: Partial<AppState>) => void) {
     if (typeof window === 'undefined' || !db) return () => {};
-
     const docRef = doc(db, CONFIG_COLLECTION, CONFIG_DOC);
-    
     return onSnapshot(docRef, (snapshot) => {
       if (snapshot.exists()) {
         const val = snapshot.data();
-
-        // Solo mezclamos la configuración, no los arrays de datos
         const configData = {
           tasa: val.tasa ?? initialState.tasa,
           comisionEfectivo: val.comisionEfectivo ?? initialState.comisionEfectivo,
@@ -137,7 +129,7 @@ export const Store = {
           categorias: val.categorias ?? initialState.categorias,
           marcas: val.marcas ?? initialState.marcas,
           presentaciones: val.presentaciones ?? initialState.presentaciones,
-          proveedores: val.proveedores ?? initialState.proveedores,
+          // proveedores NO se carga desde config/global
           ultimoZ: val.ultimoZ ?? 0,
           proximoRecibo: val.proximoRecibo ?? 1,
           proximaDevolucion: val.proximaDevolucion ?? 1,
@@ -165,7 +157,6 @@ export const Store = {
       } else {
         const local = Store.get();
         callback(local);
-        // Si no existe, crear con valores por defecto (solo configuración)
         const toPersist = {
           tasa: initialState.tasa,
           comisionEfectivo: initialState.comisionEfectivo,
@@ -176,7 +167,6 @@ export const Store = {
           categorias: initialState.categorias,
           marcas: initialState.marcas,
           presentaciones: initialState.presentaciones,
-          proveedores: initialState.proveedores,
           ultimoZ: 0,
           proximoRecibo: 1,
           proximaDevolucion: 1,
@@ -225,14 +215,10 @@ export const Store = {
     if (typeof window === 'undefined') return;
     if (!state || typeof state !== 'object' || Array.isArray(state)) return;
     
-    // 🔑 FILTRAR CAMPOS UNDEFINED Y SOLO PERMITIR CLAVES DE CONFIGURACIÓN.
-    // Así config/global jamás recibe datos transaccionales (ventas, movimientos,
-    // cxc, productos, etc.) aunque los módulos pasen el estado completo.
     const filteredState = Object.fromEntries(
       Object.entries(state).filter(([k, v]) => v !== undefined && CONFIG_KEYS.includes(k))
     );
     
-    // 🔑 Merge con initialState (siempre valores por defecto)
     const dataToPersist = {
       tasa: initialState.tasa,
       comisionEfectivo: initialState.comisionEfectivo,
@@ -243,7 +229,6 @@ export const Store = {
       categorias: initialState.categorias,
       marcas: initialState.marcas,
       presentaciones: initialState.presentaciones,
-      proveedores: initialState.proveedores,
       ultimoZ: 0,
       proximoRecibo: 1,
       proximaDevolucion: 1,
@@ -265,7 +250,6 @@ export const Store = {
       suppliers: [],
       marcasString: ['Genérica'],
       proveedoresString: [],
-      // Sobrescribir con los valores que vinieron (filtrados)
       ...filteredState,
     };
 
@@ -401,24 +385,15 @@ export const Utils = {
   }
 };
 
-// ============================================================
-// LIMPIEZA MANUAL DE config/global
-// ============================================================
-// Elimina ÚNICAMENTE los arrays transaccionales heredados de
-// config/global (ventas, movimientos, cxc, productos, etc.),
-// conservando los campos de configuración. Los datos transaccionales
-// viven en sus colecciones raíz; se debe ejecutar tras verificar/backup.
 export const limpiarConfigGlobal = async (): Promise<number> => {
   if (!db) return 0;
   const docRef = doc(db, CONFIG_COLLECTION, CONFIG_DOC);
   const snap = await getDocs(collection(db, CONFIG_COLLECTION));
   const docSnap = snap.docs.find(d => d.id === CONFIG_DOC);
   if (!docSnap) return 0;
-
   const val = docSnap.data();
   const presentes = TRANSACTIONAL_KEYS.filter(k => val[k] !== undefined);
   if (presentes.length === 0) return 0;
-
   const delObj: Record<string, any> = {};
   presentes.forEach(k => delObj[k] = deleteField());
   await updateDoc(docRef, delObj);

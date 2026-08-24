@@ -1,0 +1,5 @@
+[33m263320d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m cambios proveedores
+[33m4c225b2[m[33m ([m[1;31morigin/main[m[33m)[m fix: separadores proveedores en colección raíz, prevenir auto-eliminación
+[33m39df4c4[m Fix persistencia post-apagon + respaldo .json y reportes
+[33m6b6b5da[m Fix: stock virtual y precio por ml en venta fraccionada
+[33m4aa71df[m Fix: stock y precio por ml en venta fraccionada + busqueda inteligente de creditos

@@ -16,7 +16,7 @@ import {
   Trash,
   Boxes
 } from 'lucide-react';
-import { Store, Utils, Collections } from '@/lib/db-store';
+import { Store, Utils, Collections, PROVIDERS_COLLECTION } from '@/lib/db-store';
 import { AppState, Product, Movimiento, PaymentMethod, KitItem, Supplier, LibroDiarioEntry, Debt } from '@/lib/types';
 import { toast } from '@/hooks/use-toast';
 import { ProductFormModal } from '@/components/inventory/ProductFormModal';
@@ -63,8 +63,7 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
   // Modal para nuevo producto
   const [showNewProductModal, setShowNewProductModal] = useState(false);
 
-  // Normalización de proveedores para evitar errores de tipo si hay datos antiguos
-  // (pueden ser strings, objetos { nombre } o { name })
+  // Normalización de proveedores para evitar errores de tipo (ahora desde state.proveedores que viene de la colección raíz)
   const safeProveedores = useMemo(() => {
     return (state.proveedores || []).map((p: any) => {
       if (typeof p === 'string') return { id: p, nombre: p, rif: '', contacto: '', direccion: '', telefono: '' };

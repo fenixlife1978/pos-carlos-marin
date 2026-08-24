@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { AppState, Supplier } from '@/lib/types';
-import { Utils, Store } from '@/lib/db-store';
+import { Utils, Store, Collections, PROVIDERS_COLLECTION } from '@/lib/db-store';
 import { 
   Truck, 
   Plus, 
@@ -25,6 +25,10 @@ export default function SuppliersModule({ state, updateState }: { state: AppStat
   const [search, setSearch] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   
+  // Estado local de proveedores (se sincroniza con Firestore)
+  const [proveedores, setProveedores] = useState<Supplier[]>([]);
+  const [loading, setLoading] = useState(true);
+  
   const [formData, setFormData] = useState({
     nombre: '',
     rif: 'J-',
@@ -33,21 +37,57 @@ export default function SuppliersModule({ state, updateState }: { state: AppStat
     telefono: ''
   });
 
-  // Normalización de proveedores para evitar errores de tipo con datos antiguos
+  // Cargar proveedores desde la colección raíz
+  useEffect(() => {
+    let unsubscribe: (() => void) | null = null;
+    
+    const loadProveedores = async () => {
+      try {
+        const lista = await Collections.getAll(PROVIDERS_COLLECTION);
+        setProveedores(lista as Supplier[]);
+        // Actualizar el estado global también
+        updateState({ proveedores: lista as Supplier[] });
+        setLoading(false);
+      } catch (error) {
+        console.error('Error cargando proveedores:', error);
+        setLoading(false);
+      }
+    };
+
+    // Suscribirse en tiempo real
+    unsubscribe = Collections.subscribeAll(PROVIDERS_COLLECTION, (list) => {
+      const suppliers = list as Supplier[];
+      setProveedores(suppliers);
+      updateState({ proveedores: suppliers });
+      setLoading(false);
+    });
+
+    loadProveedores();
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
+
+  // Normalización de proveedores para evitar errores de tipo
   const safeProveedores = useMemo(() => {
-    return (state.proveedores || []).map(p => 
+    return proveedores.map(p => 
       typeof p === 'string' ? { id: p, nombre: p, rif: p, contacto: '', direccion: '', telefono: '' } : p
     );
-  }, [state.proveedores]);
+  }, [proveedores]);
 
   const filtered = safeProveedores.filter(p => 
     (p.nombre || '').toLowerCase().includes(search.toLowerCase()) ||
     (p.rif || '').toLowerCase().includes(search.toLowerCase())
   );
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!formData.nombre.trim() || !formData.rif.trim()) {
-      alert('Nombre y RIF son obligatorios');
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Nombre y RIF son obligatorios"
+      });
       return;
     }
     
@@ -65,42 +105,48 @@ export default function SuppliersModule({ state, updateState }: { state: AppStat
       return;
     }
 
-    let nuevosProveedores = [...safeProveedores];
+    const nuevoProveedor: Supplier = {
+      ...formData,
+      id: editingId || rifLimpio,
+      rif: rifLimpio,
+      nombre: formData.nombre.trim()
+    };
 
-    if (editingId) {
-      const idx = nuevosProveedores.findIndex(p => p.id === editingId);
-      if (idx === -1) return;
-
-      const viejoNombre = nuevosProveedores[idx].nombre;
+    try {
+      // Guardar en la colección raíz
+      await Collections.set(PROVIDERS_COLLECTION, nuevoProveedor.id, nuevoProveedor);
       
-      // Actualizamos el proveedor. El ID ahora es el nuevo RIF.
-      nuevosProveedores[idx] = { 
-        ...formData, 
-        id: rifLimpio, // El RIF es el nuevo ID
-        rif: rifLimpio 
-      };
+      // Actualizar productos que referencian a este proveedor por nombre (solo si es edición)
+      if (editingId) {
+        const viejoNombre = safeProveedores.find(p => p.id === editingId)?.nombre || '';
+        if (viejoNombre && viejoNombre !== formData.nombre) {
+          const productosActualizados = state.productos.map(p => 
+            p.proveedor === viejoNombre ? { ...p, proveedor: formData.nombre } : p
+          );
+          // Actualizar productos en Firestore
+          for (const prod of productosActualizados) {
+            await Collections.set('productos', prod.id, prod);
+          }
+          updateState({ productos: productosActualizados });
+        }
+      }
       
-      // Actualización en cascada para productos que referencian a este proveedor por NOMBRE
-      const nuevosProductos = state.productos.map(p => 
-        p.proveedor === viejoNombre ? { ...p, proveedor: formData.nombre } : p
-      );
+      toast({ 
+        title: editingId ? "Proveedor Actualizado" : "Proveedor Registrado", 
+        description: editingId ? "Cambios guardados correctamente." : `Se ha añadido ${formData.nombre} al sistema.` 
+      });
       
-      updateState({ proveedores: nuevosProveedores, productos: nuevosProductos });
-      toast({ title: "Proveedor Actualizado", description: "Cambios guardados correctamente." });
-    } else {
-      // Registro nuevo: Usamos el RIF como ID único
-      const nuevo: Supplier = {
-        ...formData,
-        id: rifLimpio,
-        rif: rifLimpio
-      };
-      updateState({ proveedores: [...safeProveedores, nuevo] });
-      toast({ title: "Proveedor Registrado", description: `Se ha añadido ${formData.nombre} al sistema.` });
+      setShowModal(false);
+      setEditingId(null);
+      setFormData({ nombre: '', rif: 'J-', contacto: '', direccion: '', telefono: '' });
+    } catch (error) {
+      console.error('Error guardando proveedor:', error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "No se pudo guardar el proveedor. Intente nuevamente."
+      });
     }
-    
-    setShowModal(false);
-    setEditingId(null);
-    setFormData({ nombre: '', rif: 'J-', contacto: '', direccion: '', telefono: '' });
   };
 
   const handleEdit = (p: Supplier) => {
@@ -115,12 +161,30 @@ export default function SuppliersModule({ state, updateState }: { state: AppStat
     setShowModal(true);
   };
 
-  const handleDelete = (p: Supplier) => {
+  const handleDelete = async (p: Supplier) => {
     if (!confirm(`¿Seguro que desea eliminar a "${p.nombre}"?`)) return;
-    const nuevos = safeProveedores.filter(item => item.id !== p.id);
-    updateState({ proveedores: nuevos });
-    toast({ title: "Proveedor Eliminado" });
+    
+    try {
+      await Collections.delete(PROVIDERS_COLLECTION, p.id);
+      toast({ title: "Proveedor Eliminado" });
+    } catch (error) {
+      console.error('Error eliminando proveedor:', error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "No se pudo eliminar el proveedor."
+      });
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="w-8 h-8 border-4 border-brand-gold/20 border-t-brand-gold rounded-full animate-spin" />
+        <span className="ml-3 text-sm font-black text-ink/40">Cargando proveedores...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
