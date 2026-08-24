@@ -27,6 +27,8 @@ const CONFIG_DOC = 'global';
 export const PROVIDERS_COLLECTION = 'proveedores';
 
 // 🔑 SOLO estas claves de CONFIGURACIÓN se persisten en config/global.
+// Los datos transaccionales (ventas, movimientos, cxc, cxp, productos,
+// clientes, compras, etc.) viven EXCLUSIVAMENTE en colecciones raíz.
 const CONFIG_KEYS = [
   'tasa', 'comisionEfectivo', 'pinDevolucion', 'isInitialized',
   'empresa',
@@ -41,12 +43,14 @@ const CONFIG_KEYS = [
   'marcasString', 'proveedoresString'
 ];
 
-// 🔑 Claves transaccionales que NUNCA deben vivir en config/global (auto-limpiadas)
+// 🔑 Claves que NUNCA deben vivir en config/global (auto-limpiadas si quedaron ahí).
+// AHORA INCLUYE 'proveedores' para limpiar datos antiguos que hayan quedado.
 const TRANSACTIONAL_KEYS = [
   'productos', 'ventas', 'cxc', 'cxp', 'clientes', 'devoluciones',
   'anulaciones', 'movimientos', 'libroDiario', 'terminales', 'reportesZ',
   'cashData', 'cashHistory', 'user', 'isAuthenticated',
-  'proveedores' // ← AGREGADO para limpiar datos antiguos
+  'proveedores', // ← AGREGADO para limpiar datos antiguos de config/global
+  'compras'      // ← AGREGADO por si quedaron datos antiguos
 ];
 
 export const initialState: AppState = {
@@ -90,6 +94,8 @@ export const initialState: AppState = {
   marcas: ['Genérica'],
   presentaciones: ['750ml', '1L', 'Unidad', 'Caja'],
   proveedores: [], // ← Se mantiene pero NO se persiste en config/global
+  // ========== NUEVO: HISTORIAL DE COMPRAS ==========
+  compras: [],    // ← AGREGADO para cumplir con AppState
   config: {
     exchangeRate: 36.50,
     ivaRate: 16,
@@ -385,6 +391,9 @@ export const Utils = {
   }
 };
 
+// ============================================================
+// LIMPIEZA MANUAL DE config/global
+// ============================================================
 export const limpiarConfigGlobal = async (): Promise<number> => {
   if (!db) return 0;
   const docRef = doc(db, CONFIG_COLLECTION, CONFIG_DOC);

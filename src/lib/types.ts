@@ -348,6 +348,29 @@ export interface CashSession {
   difference?: number;
 }
 
+// ============================================================
+// REGISTRO DE COMPRA (para historial)
+// ============================================================
+export interface PurchaseRecord {
+  id: string;
+  fecha: string;
+  fechaHora?: string;
+  proveedor: string;
+  numeroFactura: string;
+  condicion: 'contado' | 'credito' | 'mixto';
+  montoUSD: number;
+  pagadoUSD: number;
+  saldoUSD: number;
+  items: Array<{
+    productoId: string;
+    nombre: string;
+    cantidad: number;
+    costoUnitarioUSD: number;
+    subtotalUSD: number;
+  }>;
+  terminalId?: string;
+}
+
 // ========== APP STATE ACTUALIZADO ==========
 export interface AppState {
   user: User | null;
@@ -392,6 +415,9 @@ export interface AppState {
   marcas: string[];
   presentaciones: string[];
   proveedores: Supplier[];
+  
+  // ========== NUEVO: HISTORIAL DE COMPRAS ==========
+  compras: PurchaseRecord[];
   
   config: Config;
   productCategories: string[];
