@@ -425,9 +425,6 @@ export const limpiarConfigGlobal = async (): Promise<number> => {
   return presentes.length;
 }
 
-// NUEVO: Suscribirse a colección raíz de proveedores
-export const PROVIDERS_COLLECTION = 'proveedores';
-
 // Agregar estos métodos después de limpiarConfigGlobal en la sección Collections
 // (se insertarán después de la sección Collections)
 // NUEVO: Suscribirse a colección raíz de proveedores
