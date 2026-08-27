@@ -284,57 +284,75 @@ export default function PurchaseModule({ state, updateState }: PurchaseModulePro
     }
 
     // 🔑 PERSISTIR EN COLECCIONES RAÍZ (ya NO se guarda en config/global)
-    for (const p of productosConKits) {
-      const comprado = loteTemporal.some(i => i.productoId === p.id);
-      if (comprado) await Collections.set('productos', p.id, p);
-    }
-    for (const mov of nuevosMovimientos) {
-      await Collections.set('movimientos', mov.id, mov);
-    }
-    for (const asiento of nuevosAsientosDiario) {
-      await Collections.set('libroDiario', asiento.id, asiento);
-    }
-    if (saldoPendienteUSD > 0.0001) {
-      const nuevaDeuda = nuevasCxP[nuevasCxP.length - 1];
-      await Collections.set('cxp', nuevaDeuda.id, nuevaDeuda);
-    }
-    const compraId = 'COMP-' + Store.uid().slice(0, 8).toUpperCase();
-    await Collections.set('compras', compraId, {
-      id: compraId,
-      numeroFactura,
-      proveedor,
-      fecha,
-      fechaVencimiento,
-      condicion,
-      items: loteTemporal,
-      totalUSD,
-      pagadoUSD: pMontoPagadoUSD,
-      saldoUSD: saldoPendienteUSD,
-      tasa: tasaActual,
-      terminalId: 'ADMIN',
-      createdAt: ahoraStr
-    });
+    try {
+      // 1. Productos actualizados (stock + costo)
+      for (const p of productosConKits) {
+        const comprado = loteTemporal.some(i => i.productoId === p.id);
+        if (comprado) await Collections.set('productos', p.id, p);
+      }
+      // 2. Movimientos de kardex
+      for (const mov of nuevosMovimientos) {
+        await Collections.set('movimientos', mov.id, mov);
+      }
+      // 3. Asientos contables
+      for (const asiento of nuevosAsientosDiario) {
+        await Collections.set('libroDiario', asiento.id, asiento);
+      }
+      // 4. Cuentas por pagar (si hay saldo pendiente)
+      if (saldoPendienteUSD > 0.0001) {
+        const nuevaDeuda = nuevasCxP[nuevasCxP.length - 1];
+        await Collections.set('cxp', nuevaDeuda.id, nuevaDeuda);
+      }
+      // 5. Registro de la compra (¡IMPORTANTE: último para confirmar todo!)
+      const compraId = 'COMP-' + Store.uid().slice(0, 8).toUpperCase();
+      await Collections.set('compras', compraId, {
+        id: compraId,
+        numeroFactura,
+        proveedor,
+        fecha,
+        fechaVencimiento,
+        condicion,
+        items: loteTemporal,
+        totalUSD,
+        pagadoUSD: pMontoPagadoUSD,
+        saldoUSD: saldoPendienteUSD,
+        tasa: tasaActual,
+        terminalId: 'ADMIN',
+        createdAt: ahoraStr
+      });
 
-    updateState({
-      productos: productosConKits,
-      movimientos: [...state.movimientos, ...nuevosMovimientos],
-      libroDiario: [...nuevosAsientosDiario, ...(state.libroDiario || [])],
-      cxp: nuevasCxP
-    });
+      // ✅ SOLO si TODAS las escrituras succeeded: actualizar estado local y limpiar form
+      updateState({
+        productos: productosConKits,
+        movimientos: [...state.movimientos, ...nuevosMovimientos],
+        libroDiario: [...nuevosAsientosDiario, ...(state.libroDiario || [])],
+        cxp: nuevasCxP
+      });
 
-    toast({ 
-      title: "Compra Registrada", 
-      description: `Factura ${numeroFactura} procesada exitosamente.` 
-    });
-    
-    setProveedor('');
-    setProveedorSearch('');
-    setProveedorAbierto(false);
-    setNumeroFactura('');
-    setLoteTemporal([]);
-    setCondicion('contado');
-    setMontoPagadoUSD('0');
-    setMontoPagadoBS('0');
+      toast({ 
+        title: "Compra Registrada ✅", 
+        description: `Factura ${numeroFactura} guardada en Firestore.` 
+      });
+      
+      setProveedor('');
+      setProveedorSearch('');
+      setProveedorAbierto(false);
+      setNumeroFactura('');
+      setLoteTemporal([]);
+      setCondicion('contado');
+      setMontoPagadoUSD('0');
+      setMontoPagadoBS('0');
+
+    } catch (err: any) {
+      console.error('❌ Error guardando compra:', err);
+      toast({ 
+        title: "Error al guardar compra", 
+        description: err?.message || 'No se pudo persistir en Firestore. Verifique conexión y permisos.',
+        variant: "destructive",
+        duration: 8000
+      });
+      // NO limpiar formulario: usuario puede reintentar
+    }
   };
 
   // Handler para guardar producto desde el modal

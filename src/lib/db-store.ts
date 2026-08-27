@@ -271,7 +271,7 @@ export const Store = {
 // ============================================================
 export const Collections = {
   async set(collectionName: string, docId: string, data: any) {
-    if (!db) return;
+    if (!db) throw new Error('Firestore no inicializado');
     await setDoc(doc(db, collectionName, docId), data);
   },
 
