@@ -22,7 +22,8 @@ import {
   Receipt,
   Truck
 } from 'lucide-react';
-import { Store, Utils } from '@/lib/db-store';
+import { Store, Utils, Collections } from '@/lib/db-store';
+import { toast } from '@/hooks/use-toast';
 import { AppState, Product, Movimiento, KitItem, Supplier, LibroDiarioEntry, Debt, PurchaseRecord } from '@/lib/types';
 import { ProductFormModal } from '@/components/inventory/ProductFormModal';
 import { Card } from '@/components/ui/card';
@@ -359,7 +360,7 @@ const nuevaCompra = {
       // 🔑 PERSISTIR EN FIRESTORE ANTES DE CONFIRMAR
       try {
         // 1. Productos actualizados (stock + costo)
-        for (const p of productosConKits) {
+        for (const p of nuevosProductos) {
           const comprado = loteTemporal.some(i => i.productoId === p.id);
           if (comprado) await Collections.set('productos', p.id, p);
         }
@@ -381,7 +382,7 @@ const nuevaCompra = {
 
         // ✅ SOLO si TODAS las escrituras succeeded: actualizar estado local y limpiar form
         await updateState({
-          productos: productosConKits,
+          productos: nuevosProductos,
           movimientos: [...state.movimientos, ...nuevosMovimientos],
           libroDiario: [...nuevosAsientosDiario, ...(state.libroDiario || [])],
           cxp: nuevasCxP,
