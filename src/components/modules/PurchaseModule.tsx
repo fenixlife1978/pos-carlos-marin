@@ -411,11 +411,10 @@ const nuevaCompra = {
           duration: 8000
         });
         // NO limpiar formulario: usuario puede reintentar
-      } finally {
+} finally {
         setIsProcessing(false);
       }
-  };
-  };
+    };
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 pb-20">
