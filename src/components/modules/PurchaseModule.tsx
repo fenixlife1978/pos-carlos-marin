@@ -809,9 +809,11 @@ const nuevaCompra = {
               updateState({ productos: nuevosProds });
             }
             setShowNewProductModal(false);
-          }}
+          }};
         />
       )}
     </div>
   );
 }
+
+export default PurchaseModule;
