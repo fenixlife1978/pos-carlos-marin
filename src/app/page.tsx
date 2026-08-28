@@ -197,6 +197,12 @@ export default function LicoreriaPOS() {
         setState(prev => ({ ...prev, proveedores: list }) as AppState);
       });
       unsubscribes.current.push(unsubProveedores);
+
+      // 🔑 COMPRAS - Colección raíz de compras
+      const unsubCompras = Collections.subscribeAll('compras', (list) => {
+        setState(prev => ({ ...prev, compras: list }) as AppState);
+      });
+      unsubscribes.current.push(unsubCompras);
     };
 
     // 3. Autenticación
