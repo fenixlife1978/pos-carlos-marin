@@ -395,8 +395,6 @@ const nuevaCompra = {
         });
         
         setProveedor('');
-        setProveedorSearch('');
-        setProveedorAbierto(false);
         setNumeroFactura('');
         setLoteTemporal([]);
         setCondicion('contado');
@@ -412,9 +410,14 @@ const nuevaCompra = {
           duration: 8000
         });
         // NO limpiar formulario: usuario puede reintentar
-} finally {
+      } finally {
         setIsProcessing(false);
       }
+    } catch (err: any) {
+      console.error('❌ Error procesando compra:', err);
+      setIsProcessing(false);
+    }
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 pb-20">
@@ -810,11 +813,9 @@ const nuevaCompra = {
               updateState({ productos: nuevosProds });
             }
             setShowNewProductModal(false);
-          }};
+          }}
         />
       )}
     </div>
   );
 }
-
-export default PurchaseModule;
